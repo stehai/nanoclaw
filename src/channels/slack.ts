@@ -1,3 +1,6 @@
+import fs from 'fs';
+import path from 'path';
+
 import { App, LogLevel } from '@slack/bolt';
 import type { GenericMessageEvent, BotMessageEvent } from '@slack/types';
 
@@ -201,6 +204,21 @@ export class SlackChannel implements Channel {
   async disconnect(): Promise<void> {
     this.connected = false;
     await this.app.stop();
+  }
+
+  async sendImage(jid: string, filePath: string, caption?: string): Promise<void> {
+    const channelId = jid.replace(/^slack:/, '');
+    try {
+      await this.app.client.files.uploadV2({
+        channel_id: channelId,
+        file: fs.readFileSync(filePath),
+        filename: path.basename(filePath),
+        initial_comment: caption,
+      });
+      logger.info({ jid, filePath }, 'Slack image sent');
+    } catch (err) {
+      logger.error({ jid, filePath, err }, 'Failed to send Slack image');
+    }
   }
 
   // Slack does not expose a typing indicator API for bots.

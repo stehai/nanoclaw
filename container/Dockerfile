@@ -48,6 +48,10 @@ COPY agent-runner/ ./
 # Build TypeScript
 RUN npm run build
 
+# Install NanoClaw tools (generate-image, etc.) into PATH
+COPY tools/ /usr/local/bin/
+RUN chmod +x /usr/local/bin/generate-image
+
 # Create workspace directories
 RUN mkdir -p /workspace/group /workspace/global /workspace/extra /workspace/ipc/messages /workspace/ipc/tasks /workspace/ipc/input
 

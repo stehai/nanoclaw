@@ -63,6 +63,40 @@ server.tool(
 );
 
 server.tool(
+  'send_image',
+  "Send an image file to the current chat. The file must be under /workspace/group/. Use the generate-image command first to create the image, then pass its output path here.",
+  {
+    file_path: z.string().describe('Absolute path to the image file, must be under /workspace/group/ (e.g. /workspace/group/generated-images/image-123.png)'),
+    caption: z.string().optional().describe('Optional caption to send with the image'),
+  },
+  async (args) => {
+    const groupBase = '/workspace/group/';
+    if (!args.file_path.startsWith(groupBase)) {
+      return {
+        content: [{ type: 'text' as const, text: `Error: file_path must be under /workspace/group/ (got: ${args.file_path})` }],
+        isError: true,
+      };
+    }
+
+    // Store path relative to group folder so the host can resolve it
+    const relativePath = args.file_path.slice(groupBase.length);
+
+    const data: Record<string, string | undefined> = {
+      type: 'send_image',
+      chatJid,
+      filePath: relativePath,
+      caption: args.caption,
+      groupFolder,
+      timestamp: new Date().toISOString(),
+    };
+
+    writeIpcFile(MESSAGES_DIR, data);
+
+    return { content: [{ type: 'text' as const, text: 'Image queued for sending.' }] };
+  },
+);
+
+server.tool(
   'schedule_task',
   `Schedule a recurring or one-time task. The task will run as a full agent with access to all tools. Returns the task ID for future reference. To modify an existing task, use update_task instead.
 

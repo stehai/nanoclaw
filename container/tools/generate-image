@@ -1,0 +1,118 @@
+#!/usr/bin/env node
+/**
+ * generate-image - Gemini Nano Banana 2 image generation and editing tool
+ *
+ * Usage:
+ *   generate-image --prompt "A sunset over mountains"
+ *   generate-image --prompt "Make it look vintage" --input /workspace/group/inbox/photo.jpg
+ *   generate-image --prompt "..." --output /workspace/group/generated-images/result.png
+ *
+ * Outputs the path to the generated image on stdout.
+ * Requires: GOOGLE_GEMINI_API_KEY environment variable
+ */
+
+import { writeFileSync, readFileSync, mkdirSync } from 'node:fs';
+import { dirname, extname } from 'node:path';
+import { parseArgs } from 'node:util';
+
+const { values: args } = parseArgs({
+  options: {
+    prompt: { type: 'string' },
+    input:  { type: 'string' },
+    output: { type: 'string' },
+  },
+  strict: false,
+});
+
+const prompt = args.prompt;
+const inputPath = args.input;
+
+if (!prompt) {
+  console.error('Error: --prompt is required');
+  process.exit(1);
+}
+
+const apiKey = process.env.GOOGLE_GEMINI_API_KEY;
+if (!apiKey) {
+  console.error('Error: GOOGLE_GEMINI_API_KEY environment variable is not set');
+  process.exit(1);
+}
+
+const outputPath = args.output ?? (() => {
+  const dir = '/workspace/group/generated-images';
+  mkdirSync(dir, { recursive: true });
+  return `${dir}/image-${Date.now()}.png`;
+})();
+
+mkdirSync(dirname(outputPath), { recursive: true });
+
+let model, body;
+
+if (inputPath) {
+  // Image editing mode
+  const imageData = readFileSync(inputPath);
+  const b64 = imageData.toString('base64');
+  const ext = extname(inputPath).toLowerCase();
+  const mimeType =
+    ext === '.jpg' || ext === '.jpeg' ? 'image/jpeg' :
+    ext === '.webp' ? 'image/webp' :
+    'image/png';
+
+  model = 'imagen-3.0-capability-001';
+  body = {
+    instances: [{
+      prompt,
+      referenceImages: [{
+        referenceType: 'REFERENCE_TYPE_RAW',
+        referenceImage: { bytesBase64Encoded: b64, mimeType },
+      }],
+    }],
+    parameters: { editMode: 'inpainting-freeform', sampleCount: 1 },
+  };
+} else {
+  // Text-to-image generation mode
+  model = 'imagen-3.0-generate-002';
+  body = {
+    instances: [{ prompt }],
+    parameters: { sampleCount: 1 },
+  };
+}
+
+const url = `https://generativelanguage.googleapis.com/v1beta/models/${model}:predict?key=${apiKey}`;
+
+let response;
+try {
+  response = await fetch(url, {
+    method: 'POST',
+    headers: { 'Content-Type': 'application/json' },
+    body: JSON.stringify(body),
+  });
+} catch (err) {
+  console.error('Network error calling Gemini API:', err.message);
+  process.exit(1);
+}
+
+const result = await response.json();
+
+if (!response.ok || result.error) {
+  const errDetail = result.error
+    ? JSON.stringify(result.error, null, 2)
+    : `HTTP ${response.status}`;
+  console.error('Gemini API error:', errDetail);
+  process.exit(1);
+}
+
+const predictions = result.predictions;
+if (!predictions?.length) {
+  console.error('No predictions returned. Response:', JSON.stringify(result, null, 2));
+  process.exit(1);
+}
+
+const b64Image = predictions[0].bytesBase64Encoded;
+if (!b64Image) {
+  console.error('No image data in prediction:', JSON.stringify(predictions[0], null, 2));
+  process.exit(1);
+}
+
+writeFileSync(outputPath, Buffer.from(b64Image, 'base64'));
+console.log(outputPath);
