@@ -209,10 +209,12 @@ function buildVolumeMounts(
       // First time: copy entire source tree
       fs.cpSync(agentRunnerSrc, groupAgentRunnerDir, { recursive: true });
     } else {
-      // Always sync ipc-mcp-stdio.ts so new MCP tools are available immediately
-      const mcpSrc = path.join(agentRunnerSrc, 'ipc-mcp-stdio.ts');
-      const mcpDst = path.join(groupAgentRunnerDir, 'ipc-mcp-stdio.ts');
-      if (fs.existsSync(mcpSrc)) fs.copyFileSync(mcpSrc, mcpDst);
+      // Always sync agent-runner source files so updates propagate to existing groups
+      for (const file of ['index.ts', 'ipc-mcp-stdio.ts']) {
+        const src = path.join(agentRunnerSrc, file);
+        const dst = path.join(groupAgentRunnerDir, file);
+        if (fs.existsSync(src)) fs.copyFileSync(src, dst);
+      }
     }
   }
   mounts.push({

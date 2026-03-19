@@ -464,6 +464,35 @@ async function runQuery(
   return { newSessionId, lastAssistantUuid, closedDuringQuery };
 }
 
+/**
+ * Remove trailing incomplete assistant entries from a session JSONL.
+ * An incomplete entry has stop_reason === null (container was killed mid-stream).
+ * Claude Code SDK crashes (SIGKILL) when it tries to resume such a session.
+ */
+function sanitizeSessionTranscript(sessionId: string): void {
+  // Claude stores sessions under ~/.claude/projects/<cwd-slug>/<sessionId>.jsonl
+  // In the container, cwd is /workspace/group → slug is -workspace-group
+  const sessionPath = `/home/node/.claude/projects/-workspace-group/${sessionId}.jsonl`;
+  if (!fs.existsSync(sessionPath)) return;
+
+  try {
+    const raw = fs.readFileSync(sessionPath, 'utf-8');
+    const lines = raw.split('\n').filter(l => l.trim());
+    if (lines.length === 0) return;
+
+    const last = JSON.parse(lines[lines.length - 1]);
+    if (
+      last.type === 'assistant' &&
+      last.message?.stop_reason == null
+    ) {
+      log(`Removing incomplete trailing assistant entry from session ${sessionId}`);
+      fs.writeFileSync(sessionPath, lines.slice(0, -1).join('\n') + '\n', 'utf-8');
+    }
+  } catch (err) {
+    log(`sanitizeSessionTranscript: ${err instanceof Error ? err.message : String(err)}`);
+  }
+}
+
 async function main(): Promise<void> {
   let containerInput: ContainerInput;
 
@@ -489,6 +518,9 @@ async function main(): Promise<void> {
   const mcpServerPath = path.join(__dirname, 'ipc-mcp-stdio.js');
 
   let sessionId = containerInput.sessionId;
+  if (sessionId) {
+    sanitizeSessionTranscript(sessionId);
+  }
   fs.mkdirSync(IPC_INPUT_DIR, { recursive: true });
 
   // Clean up stale _close sentinel from previous container runs
