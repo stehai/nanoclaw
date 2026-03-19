@@ -4,6 +4,7 @@
  */
 import { ChildProcess, exec, spawn } from 'child_process';
 import fs from 'fs';
+import os from 'os';
 import path from 'path';
 
 import {
@@ -26,7 +27,11 @@ import {
   stopContainer,
 } from './container-runtime.js';
 import { detectAuthMode } from './credential-proxy.js';
-import { validateAdditionalMounts } from './mount-security.js';
+import { readEnvFile } from './env.js';
+import {
+  loadMountAllowlist,
+  validateAdditionalMounts,
+} from './mount-security.js';
 import { RegisteredGroup } from './types.js';
 
 // Sentinel markers for robust output parsing (must match agent-runner)
@@ -121,7 +126,7 @@ function buildVolumeMounts(
     group.folder,
     '.claude',
   );
-  fs.mkdirSync(groupSessionsDir, { recursive: true });
+  fs.mkdirSync(groupSessionsDir, { recursive: true, mode: 0o777 });
   const settingsFile = path.join(groupSessionsDir, 'settings.json');
   if (!fs.existsSync(settingsFile)) {
     fs.writeFileSync(
@@ -166,9 +171,18 @@ function buildVolumeMounts(
   // Per-group IPC namespace: each group gets its own IPC directory
   // This prevents cross-group privilege escalation via IPC
   const groupIpcDir = resolveGroupIpcPath(group.folder);
-  fs.mkdirSync(path.join(groupIpcDir, 'messages'), { recursive: true });
-  fs.mkdirSync(path.join(groupIpcDir, 'tasks'), { recursive: true });
-  fs.mkdirSync(path.join(groupIpcDir, 'input'), { recursive: true });
+  fs.mkdirSync(path.join(groupIpcDir, 'messages'), {
+    recursive: true,
+    mode: 0o777,
+  });
+  fs.mkdirSync(path.join(groupIpcDir, 'tasks'), {
+    recursive: true,
+    mode: 0o777,
+  });
+  fs.mkdirSync(path.join(groupIpcDir, 'input'), {
+    recursive: true,
+    mode: 0o777,
+  });
   mounts.push({
     hostPath: groupIpcDir,
     containerPath: '/workspace/ipc',
@@ -190,14 +204,39 @@ function buildVolumeMounts(
     group.folder,
     'agent-runner-src',
   );
-  if (!fs.existsSync(groupAgentRunnerDir) && fs.existsSync(agentRunnerSrc)) {
-    fs.cpSync(agentRunnerSrc, groupAgentRunnerDir, { recursive: true });
+  if (fs.existsSync(agentRunnerSrc)) {
+    if (!fs.existsSync(groupAgentRunnerDir)) {
+      // First time: copy entire source tree
+      fs.cpSync(agentRunnerSrc, groupAgentRunnerDir, { recursive: true });
+    } else {
+      // Always sync ipc-mcp-stdio.ts so new MCP tools are available immediately
+      const mcpSrc = path.join(agentRunnerSrc, 'ipc-mcp-stdio.ts');
+      const mcpDst = path.join(groupAgentRunnerDir, 'ipc-mcp-stdio.ts');
+      if (fs.existsSync(mcpSrc)) fs.copyFileSync(mcpSrc, mcpDst);
+    }
   }
   mounts.push({
     hostPath: groupAgentRunnerDir,
     containerPath: '/app/src',
     readonly: false,
   });
+
+  // Auto-mount all allowlist roots at their exact host path.
+  // The allowlist defines directories intended for file exchange with containers.
+  // Mounting at the same path means the host path in messages matches what the
+  // agent sees inside the container (e.g. /root/nanoclaw/agent-home/inbox/photo.jpg).
+  const allowlist = loadMountAllowlist();
+  if (allowlist) {
+    for (const root of allowlist.allowedRoots) {
+      const hostPath = root.path.startsWith('~/')
+        ? path.join(process.env.HOME || os.homedir(), root.path.slice(2))
+        : path.resolve(root.path);
+      if (!fs.existsSync(hostPath)) continue;
+      const writable =
+        root.allowReadWrite && (isMain || !allowlist.nonMainReadOnly);
+      mounts.push({ hostPath, containerPath: hostPath, readonly: !writable });
+    }
+  }
 
   // Additional mounts validated against external allowlist (tamper-proof from containers)
   if (group.containerConfig?.additionalMounts) {
@@ -220,6 +259,13 @@ function buildContainerArgs(
 
   // Pass host timezone so container's local time matches the user's
   args.push('-e', `TZ=${TIMEZONE}`);
+
+  // Pass Google Gemini API key for image generation (if configured)
+  const geminiEnv = readEnvFile(['GOOGLE_GEMINI_API_KEY']);
+  const geminiApiKey = geminiEnv.GOOGLE_GEMINI_API_KEY;
+  if (geminiApiKey) {
+    args.push('-e', `GOOGLE_GEMINI_API_KEY=${geminiApiKey}`);
+  }
 
   // Route API traffic through the credential proxy (containers never see real secrets)
   args.push(
@@ -273,7 +319,20 @@ export async function runContainerAgent(
   const startTime = Date.now();
 
   const groupDir = resolveGroupFolderPath(group.folder);
-  fs.mkdirSync(groupDir, { recursive: true });
+  fs.mkdirSync(groupDir, { recursive: true, mode: 0o777 });
+
+  // Remove any stale _close sentinel before spawning a new container.
+  // The sentinel is written by the host (as root) and cannot be deleted by
+  // the container's node user, so we must clean it up here on the host side.
+  const groupIpcInputDir = path.join(
+    resolveGroupIpcPath(group.folder),
+    'input',
+  );
+  try {
+    fs.unlinkSync(path.join(groupIpcInputDir, '_close'));
+  } catch {
+    /* not present */
+  }
 
   const mounts = buildVolumeMounts(group, input.isMain);
   const safeName = group.folder.replace(/[^a-zA-Z0-9-]/g, '-');
@@ -304,7 +363,7 @@ export async function runContainerAgent(
   );
 
   const logsDir = path.join(groupDir, 'logs');
-  fs.mkdirSync(logsDir, { recursive: true });
+  fs.mkdirSync(logsDir, { recursive: true, mode: 0o777 });
 
   return new Promise((resolve) => {
     const container = spawn(CONTAINER_RUNTIME_BIN, containerArgs, {
@@ -657,7 +716,7 @@ export function writeTasksSnapshot(
 ): void {
   // Write filtered tasks to the group's IPC directory
   const groupIpcDir = resolveGroupIpcPath(groupFolder);
-  fs.mkdirSync(groupIpcDir, { recursive: true });
+  fs.mkdirSync(groupIpcDir, { recursive: true, mode: 0o777 });
 
   // Main sees all tasks, others only see their own
   const filteredTasks = isMain
@@ -687,7 +746,7 @@ export function writeGroupsSnapshot(
   registeredJids: Set<string>,
 ): void {
   const groupIpcDir = resolveGroupIpcPath(groupFolder);
-  fs.mkdirSync(groupIpcDir, { recursive: true });
+  fs.mkdirSync(groupIpcDir, { recursive: true, mode: 0o777 });
 
   // Main sees all groups; others see nothing (they can't activate groups)
   const visibleGroups = isMain ? groups : [];

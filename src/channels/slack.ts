@@ -206,7 +206,11 @@ export class SlackChannel implements Channel {
     await this.app.stop();
   }
 
-  async sendImage(jid: string, filePath: string, caption?: string): Promise<void> {
+  async sendImage(
+    jid: string,
+    filePath: string,
+    caption?: string,
+  ): Promise<void> {
     const channelId = jid.replace(/^slack:/, '');
     try {
       await this.app.client.files.uploadV2({

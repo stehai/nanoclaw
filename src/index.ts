@@ -111,7 +111,7 @@ function registerGroup(jid: string, group: RegisteredGroup): void {
   setRegisteredGroup(jid, group);
 
   // Create group folder
-  fs.mkdirSync(path.join(groupDir, 'logs'), { recursive: true });
+  fs.mkdirSync(path.join(groupDir, 'logs'), { recursive: true, mode: 0o777 });
 
   logger.info(
     { jid, name: group.name, folder: group.folder },
@@ -619,6 +619,18 @@ async function main(): Promise<void> {
       const channel = findChannel(channels, jid);
       if (!channel) throw new Error(`No channel for JID: ${jid}`);
       return channel.sendMessage(jid, text);
+    },
+    sendImage: async (jid, filePath, caption) => {
+      const channel = findChannel(channels, jid);
+      if (!channel) throw new Error(`No channel for JID: ${jid}`);
+      if (!channel.sendImage) {
+        logger.warn(
+          { jid, channel: channel.name },
+          'Channel does not support image sending',
+        );
+        return;
+      }
+      return channel.sendImage(jid, filePath, caption);
     },
     registeredGroups: () => registeredGroups,
     registerGroup,
