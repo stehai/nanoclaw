@@ -424,10 +424,12 @@ async function runQuery(
             NANOCLAW_IS_MAIN: containerInput.isMain ? '1' : '0',
           },
         },
-        open_brain: {
-          type: 'http' as const,
-          url: 'https://tdcoopppxwryxsnikcye.supabase.co/functions/v1/open-brain-mcp?key=1234a7f620179693d401ade9cedffa3a39a6eae94c11de18f4cc4c82eb29aab',
-        },
+        ...(process.env.OPEN_BRAIN_MCP_KEY ? {
+          open_brain: {
+            type: 'http' as const,
+            url: `https://tdcoopppxwryxsnikcye.supabase.co/functions/v1/open-brain-mcp?key=${process.env.OPEN_BRAIN_MCP_KEY}`,
+          },
+        } : {}),
       },
       hooks: {
         PreCompact: [{ hooks: [createPreCompactHook(containerInput.assistantName)] }],

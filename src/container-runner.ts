@@ -263,10 +263,16 @@ function buildContainerArgs(
   args.push('-e', `TZ=${TIMEZONE}`);
 
   // Pass Google Gemini API key for image generation (if configured)
-  const geminiEnv = readEnvFile(['GOOGLE_GEMINI_API_KEY']);
+  const geminiEnv = readEnvFile(['GOOGLE_GEMINI_API_KEY', 'OPEN_BRAIN_MCP_KEY']);
   const geminiApiKey = geminiEnv.GOOGLE_GEMINI_API_KEY;
   if (geminiApiKey) {
     args.push('-e', `GOOGLE_GEMINI_API_KEY=${geminiApiKey}`);
+  }
+
+  // Pass Open Brain MCP key (if configured)
+  const openBrainKey = geminiEnv.OPEN_BRAIN_MCP_KEY;
+  if (openBrainKey) {
+    args.push('-e', `OPEN_BRAIN_MCP_KEY=${openBrainKey}`);
   }
 
   // Route API traffic through the credential proxy (containers never see real secrets)
