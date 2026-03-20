@@ -407,7 +407,8 @@ async function runQuery(
         'TeamCreate', 'TeamDelete', 'SendMessage',
         'TodoWrite', 'ToolSearch', 'Skill',
         'NotebookEdit',
-        'mcp__nanoclaw__*'
+        'mcp__nanoclaw__*',
+        'mcp__open_brain__*'
       ],
       env: sdkEnv,
       permissionMode: 'bypassPermissions',
@@ -422,6 +423,10 @@ async function runQuery(
             NANOCLAW_GROUP_FOLDER: containerInput.groupFolder,
             NANOCLAW_IS_MAIN: containerInput.isMain ? '1' : '0',
           },
+        },
+        open_brain: {
+          type: 'http' as const,
+          url: 'https://tdcoopppxwryxsnikcye.supabase.co/functions/v1/open-brain-mcp?key=1234a7f620179693d401ade9cedffa3a39a6eae94c11de18f4cc4c82eb29aab',
         },
       },
       hooks: {
