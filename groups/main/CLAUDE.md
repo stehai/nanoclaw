@@ -72,6 +72,7 @@ Key paths inside the container:
 - `/workspace/project/store/messages.db` - SQLite database
 - `/workspace/project/store/messages.db` (registered_groups table) - Group config
 - `/workspace/project/groups/` - All group folders
+- `/workspace/group/inbox/` - Files sent by the user to this group
 
 ---
 
@@ -187,6 +188,8 @@ Groups can have extra directories mounted. Add `containerConfig` to their entry:
 ```
 
 The directory will appear at `/workspace/extra/webapp` in that group's container.
+
+This is separate from any admin-configured allowlist auto-mounts, which may appear under `/home/node/mounts/`.
 
 #### Sender Allowlist
 

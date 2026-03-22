@@ -378,7 +378,11 @@ setRegisteredGroup("1234567890@g.us", {
 
 Folder names follow the convention `{channel}_{group-name}` (e.g., `whatsapp_family-chat`, `telegram_dev-team`). The main group has `isMain: true` set during registration.
 
-Additional mounts appear at `/workspace/extra/{containerPath}` inside the container.
+Additional mounts from `containerConfig.additionalMounts` appear at `/workspace/extra/{containerPath}` inside the container.
+
+Files sent by the user to the agent are stored in the group's workspace and are available under `/workspace/group/inbox/`.
+
+Some installations also auto-mount allowlist roots for host/container file exchange. Those appear separately under `/home/node/mounts/` with generated names and should not be confused with `/workspace/extra/`.
 
 **Mount syntax note:** Read-write mounts use `-v host:container`, but readonly mounts require `--mount "type=bind,source=...,target=...,readonly"` (the `:ro` suffix may not work on all runtimes).
 

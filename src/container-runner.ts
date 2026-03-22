@@ -61,6 +61,16 @@ interface VolumeMount {
   readonly: boolean;
 }
 
+function buildAllowlistContainerPath(hostPath: string): string {
+  const normalized = path.resolve(hostPath);
+  const pathKey = normalized
+    .replace(/^[A-Za-z]:/, '')
+    .replace(/[^A-Za-z0-9]+/g, '-')
+    .replace(/^-+|-+$/g, '')
+    .toLowerCase();
+  return `/home/node/mounts/${path.basename(normalized)}-${pathKey.slice(-24)}`;
+}
+
 function buildVolumeMounts(
   group: RegisteredGroup,
   isMain: boolean,
@@ -223,12 +233,12 @@ function buildVolumeMounts(
     readonly: false,
   });
 
-  // Auto-mount all allowlist roots at their exact host path.
-  // The allowlist defines directories intended for file exchange with containers.
-  // Mounting at the same path means the host path in messages matches what the
-  // agent sees inside the container (e.g. /root/nanoclaw/agent-home/inbox/photo.jpg).
+  // Auto-mount all allowlist roots at a container-accessible path.
+  // The container runs as uid 1000 (node) which can't traverse /root/,
+  // so we mount under /home/node/mounts/<basename> instead.
   const allowlist = loadMountAllowlist();
   if (allowlist) {
+    const seenContainerPaths = new Map<string, string>();
     for (const root of allowlist.allowedRoots) {
       const hostPath = root.path.startsWith('~/')
         ? path.join(process.env.HOME || os.homedir(), root.path.slice(2))
@@ -236,7 +246,15 @@ function buildVolumeMounts(
       if (!fs.existsSync(hostPath)) continue;
       const writable =
         root.allowReadWrite && (isMain || !allowlist.nonMainReadOnly);
-      mounts.push({ hostPath, containerPath: hostPath, readonly: !writable });
+      const containerPath = buildAllowlistContainerPath(hostPath);
+      const existingHostPath = seenContainerPaths.get(containerPath);
+      if (existingHostPath && existingHostPath !== hostPath) {
+        throw new Error(
+          `Allowlist mount path collision: ${existingHostPath} and ${hostPath} both map to ${containerPath}`,
+        );
+      }
+      seenContainerPaths.set(containerPath, hostPath);
+      mounts.push({ hostPath, containerPath, readonly: !writable });
     }
   }
 
@@ -263,7 +281,10 @@ function buildContainerArgs(
   args.push('-e', `TZ=${TIMEZONE}`);
 
   // Pass Google Gemini API key for image generation (if configured)
-  const geminiEnv = readEnvFile(['GOOGLE_GEMINI_API_KEY', 'OPEN_BRAIN_MCP_KEY']);
+  const geminiEnv = readEnvFile([
+    'GOOGLE_GEMINI_API_KEY',
+    'OPEN_BRAIN_MCP_KEY',
+  ]);
   const geminiApiKey = geminiEnv.GOOGLE_GEMINI_API_KEY;
   if (geminiApiKey) {
     args.push('-e', `GOOGLE_GEMINI_API_KEY=${geminiApiKey}`);
@@ -343,6 +364,7 @@ export async function runContainerAgent(
   }
 
   const mounts = buildVolumeMounts(group, input.isMain);
+
   const safeName = group.folder.replace(/[^a-zA-Z0-9-]/g, '-');
   const containerName = `nanoclaw-${safeName}-${Date.now()}`;
   const containerArgs = buildContainerArgs(mounts, containerName);

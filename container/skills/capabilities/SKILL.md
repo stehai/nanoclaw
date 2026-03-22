@@ -66,6 +66,7 @@ which agent-browser 2>/dev/null && echo "agent-browser: available" || echo "agen
 ```bash
 ls /workspace/group/CLAUDE.md 2>/dev/null && echo "Group memory: yes" || echo "Group memory: no"
 ls /workspace/extra/ 2>/dev/null && echo "Extra mounts: $(ls /workspace/extra/ 2>/dev/null | wc -l | tr -d ' ')" || echo "Extra mounts: none"
+ls /home/node/mounts/ 2>/dev/null && echo "Allowlist mounts: $(ls /home/node/mounts/ 2>/dev/null | wc -l | tr -d ' ')" || echo "Allowlist mounts: none"
 ```
 
 ## Report format

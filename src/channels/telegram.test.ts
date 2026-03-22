@@ -14,6 +14,10 @@ vi.mock('../config.js', () => ({
   TRIGGER_PATTERN: /^@Andy\b/i,
 }));
 
+vi.mock('../group-folder.js', () => ({
+  resolveGroupFolderPath: vi.fn((folder: string) => `/tmp/groups/${folder}`),
+}));
+
 // Mock logger
 vi.mock('../logger.js', () => ({
   logger: {
@@ -23,6 +27,65 @@ vi.mock('../logger.js', () => ({
     error: vi.fn(),
   },
 }));
+
+const fsMocks = vi.hoisted(() => ({
+  watchMock: vi.fn(() => ({ close: vi.fn() })),
+  mkdirSyncMock: vi.fn(),
+  readdirSyncMock: vi.fn(() => []),
+  statSyncMock: vi.fn((target: string) => ({
+    isFile: () => !target.endsWith('/outbox') && !target.endsWith('/sent'),
+  })),
+  renameSyncMock: vi.fn(),
+}));
+
+vi.mock('fs', async () => {
+  const actual = await vi.importActual<typeof import('fs')>('fs');
+  return {
+    ...actual,
+    default: {
+      ...actual,
+      mkdirSync: fsMocks.mkdirSyncMock,
+      readdirSync: fsMocks.readdirSyncMock,
+      statSync: fsMocks.statSyncMock,
+      renameSync: fsMocks.renameSyncMock,
+      unlink: vi.fn((_path, cb) => cb?.()),
+      watch: fsMocks.watchMock,
+      createWriteStream: vi.fn(() => {
+        const listeners = new Map<string, Array<() => void>>();
+        return {
+          on: (event: string, cb: () => void) => {
+            const arr = listeners.get(event) || [];
+            arr.push(cb);
+            listeners.set(event, arr);
+          },
+          close: (cb: () => void) => cb(),
+          emit: (event: string) => {
+            for (const cb of listeners.get(event) || []) cb();
+          },
+        };
+      }),
+    },
+  };
+});
+
+vi.mock('https', async () => {
+  const actual = await vi.importActual<typeof import('https')>('https');
+  return {
+    ...actual,
+    default: {
+      ...actual,
+      globalAgent: {},
+      get: vi.fn((_url, _opts, cb) => {
+        cb({
+          pipe: (file: { emit: (event: string) => void }) => {
+            setTimeout(() => file.emit('finish'), 0);
+          },
+        });
+        return { on: vi.fn().mockReturnThis() };
+      }),
+    },
+  };
+});
 
 // --- Grammy mock ---
 
@@ -38,7 +101,10 @@ vi.mock('grammy', () => ({
     errorHandler: Handler | null = null;
 
     api = {
+      getFile: vi.fn().mockResolvedValue({ file_path: 'telegram/file-path' }),
       sendMessage: vi.fn().mockResolvedValue(undefined),
+      sendDocument: vi.fn().mockResolvedValue(undefined),
+      sendPhoto: vi.fn().mockResolvedValue(undefined),
       sendChatAction: vi.fn().mockResolvedValue(undefined),
     };
 
@@ -173,7 +239,11 @@ async function triggerMediaMessage(
   ctx: ReturnType<typeof createMediaCtx>,
 ) {
   const handlers = currentBot().filterHandlers.get(filter) || [];
-  for (const h of handlers) await h(ctx);
+  for (const h of handlers) {
+    const pending = h(ctx);
+    await vi.runAllTimersAsync();
+    await pending;
+  }
 }
 
 // --- Tests ---
@@ -181,10 +251,13 @@ async function triggerMediaMessage(
 describe('TelegramChannel', () => {
   beforeEach(() => {
     vi.clearAllMocks();
+    vi.useFakeTimers();
+    vi.setSystemTime(new Date('2026-03-22T12:00:00.000Z'));
   });
 
   afterEach(() => {
     vi.restoreAllMocks();
+    vi.useRealTimers();
   });
 
   // --- Connection lifecycle ---
@@ -554,31 +627,41 @@ describe('TelegramChannel', () => {
   // --- Non-text messages ---
 
   describe('non-text messages', () => {
-    it('stores photo with placeholder', async () => {
+    it('stores photo in the group inbox and reports the /workspace/group path', async () => {
       const opts = createTestOpts();
       const channel = new TelegramChannel('test-token', opts);
       await channel.connect();
 
-      const ctx = createMediaCtx({});
+      const ctx = createMediaCtx({
+        extra: { photo: [{ file_id: 'low-res' }, { file_id: 'high-res' }] },
+      });
       await triggerMediaMessage('message:photo', ctx);
 
       expect(opts.onMessage).toHaveBeenCalledWith(
         'tg:100200300',
-        expect.objectContaining({ content: '[Photo]' }),
+        expect.objectContaining({
+          content: '[File received: /workspace/group/inbox/photo-1774180800000.jpg]',
+        }),
       );
     });
 
-    it('stores photo with caption', async () => {
+    it('stores photo with caption using the /workspace/group path', async () => {
       const opts = createTestOpts();
       const channel = new TelegramChannel('test-token', opts);
       await channel.connect();
 
-      const ctx = createMediaCtx({ caption: 'Look at this' });
+      const ctx = createMediaCtx({
+        caption: 'Look at this',
+        extra: { photo: [{ file_id: 'low-res' }, { file_id: 'high-res' }] },
+      });
       await triggerMediaMessage('message:photo', ctx);
 
       expect(opts.onMessage).toHaveBeenCalledWith(
         'tg:100200300',
-        expect.objectContaining({ content: '[Photo] Look at this' }),
+        expect.objectContaining({
+          content:
+            '[File received: /workspace/group/inbox/photo-1774180800000.jpg] Look at this',
+        }),
       );
     });
 
@@ -624,19 +707,22 @@ describe('TelegramChannel', () => {
       );
     });
 
-    it('stores document with filename', async () => {
+    it('stores document with filename in the group inbox', async () => {
       const opts = createTestOpts();
       const channel = new TelegramChannel('test-token', opts);
       await channel.connect();
 
       const ctx = createMediaCtx({
-        extra: { document: { file_name: 'report.pdf' } },
+        extra: { document: { file_id: 'doc-1', file_name: 'report.pdf' } },
       });
       await triggerMediaMessage('message:document', ctx);
 
       expect(opts.onMessage).toHaveBeenCalledWith(
         'tg:100200300',
-        expect.objectContaining({ content: '[Document: report.pdf]' }),
+        expect.objectContaining({
+          content:
+            '[File received: /workspace/group/inbox/report-1774180800000.pdf]',
+        }),
       );
     });
 
@@ -645,12 +731,15 @@ describe('TelegramChannel', () => {
       const channel = new TelegramChannel('test-token', opts);
       await channel.connect();
 
-      const ctx = createMediaCtx({ extra: { document: {} } });
+      const ctx = createMediaCtx({ extra: { document: { file_id: 'doc-1' } } });
       await triggerMediaMessage('message:document', ctx);
 
       expect(opts.onMessage).toHaveBeenCalledWith(
         'tg:100200300',
-        expect.objectContaining({ content: '[Document: file]' }),
+        expect.objectContaining({
+          content:
+            '[File received: /workspace/group/inbox/file-1774180800000]',
+        }),
       );
     });
 

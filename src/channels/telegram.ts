@@ -6,10 +6,10 @@ import { Api, Bot, InputFile } from 'grammy';
 
 import {
   ASSISTANT_NAME,
-  MOUNT_ALLOWLIST_PATH,
   TRIGGER_PATTERN,
 } from '../config.js';
 import { readEnvFile } from '../env.js';
+import { resolveGroupFolderPath } from '../group-folder.js';
 import { logger } from '../logger.js';
 import { registerChannel, ChannelOpts } from './registry.js';
 import {
@@ -18,22 +18,6 @@ import {
   OnInboundMessage,
   RegisteredGroup,
 } from '../types.js';
-
-/** Read the first writable allowed root from the mount-allowlist, or fall back. */
-function getFilesDir(): string {
-  try {
-    const raw = fs.readFileSync(MOUNT_ALLOWLIST_PATH, 'utf-8');
-    const allowlist = JSON.parse(raw);
-    const first = (
-      allowlist.allowedRoots as Array<{
-        path: string;
-        allowReadWrite: boolean;
-      }>
-    )?.find((r) => r.allowReadWrite);
-    if (first?.path) return first.path;
-  } catch {}
-  return path.resolve(process.cwd(), 'agent-home');
-}
 
 /** Download a Telegram file to a local path. */
 async function downloadTelegramFile(
@@ -89,20 +73,24 @@ export class TelegramChannel implements Channel {
   private bot: Bot | null = null;
   private opts: TelegramChannelOpts;
   private botToken: string;
-  private filesDir: string;
-  private outboxWatcher: fs.FSWatcher | null = null;
+  private outboxWatchers = new Map<string, fs.FSWatcher>();
 
   constructor(botToken: string, opts: TelegramChannelOpts) {
     this.botToken = botToken;
     this.opts = opts;
-    this.filesDir = getFilesDir();
   }
 
-  /** Ensure inbox/outbox/sent directories exist. */
-  private initFileDirs(): void {
+  private getGroupFilesDir(chatJid: string): string | null {
+    const group = this.opts.registeredGroups()[chatJid];
+    if (!group) return null;
+    return resolveGroupFolderPath(group.folder);
+  }
+
+  /** Ensure inbox/outbox/sent directories exist for the group. */
+  private initFileDirs(filesDir: string): void {
     for (const dir of [
-      path.join(this.filesDir, 'inbox'),
-      path.join(this.filesDir, 'outbox', 'sent'),
+      path.join(filesDir, 'inbox'),
+      path.join(filesDir, 'outbox', 'sent'),
     ]) {
       fs.mkdirSync(dir, { recursive: true });
     }
@@ -115,13 +103,16 @@ export class TelegramChannel implements Channel {
     fileName: string,
   ): Promise<void> {
     const chatJid = `tg:${ctx.chat.id}`;
-    const group = this.opts.registeredGroups()[chatJid];
-    if (!group) return;
+    const filesDir = this.getGroupFilesDir(chatJid);
+    if (!filesDir) return;
+    this.initFileDirs(filesDir);
+    this.ensureOutboxWatcher(chatJid);
 
     try {
       const fileInfo = await this.bot!.api.getFile(fileId);
       const fileUrl = `https://api.telegram.org/file/bot${this.botToken}/${fileInfo.file_path}`;
-      const destPath = path.join(this.filesDir, 'inbox', fileName);
+      const destPath = path.join(filesDir, 'inbox', fileName);
+      const agentPath = `/workspace/group/inbox/${fileName}`;
       await downloadTelegramFile(fileUrl, destPath);
 
       const caption = ctx.message.caption ? ` ${ctx.message.caption}` : '';
@@ -146,12 +137,12 @@ export class TelegramChannel implements Channel {
         chat_jid: chatJid,
         sender: ctx.from?.id?.toString() || '',
         sender_name: senderName,
-        content: `[File received: ${destPath}]${caption}`,
+        content: `[File received: ${agentPath}]${caption}`,
         timestamp,
         is_from_me: false,
       });
 
-      logger.info({ chatJid, destPath }, 'Telegram file saved to inbox');
+      logger.info({ chatJid, destPath, agentPath }, 'Telegram file saved to inbox');
     } catch (err) {
       logger.error(
         { err, chatJid, fileName },
@@ -160,9 +151,14 @@ export class TelegramChannel implements Channel {
     }
   }
 
-  /** Watch outbox/ and send any new files via Telegram, then move to sent/. */
-  private startOutboxWatcher(): void {
-    const outboxDir = path.join(this.filesDir, 'outbox');
+  /** Watch a group's outbox/ and send any new files via Telegram, then move to sent/. */
+  private ensureOutboxWatcher(chatJid: string): void {
+    if (this.outboxWatchers.has(chatJid)) return;
+    const filesDir = this.getGroupFilesDir(chatJid);
+    if (!filesDir) return;
+    this.initFileDirs(filesDir);
+
+    const outboxDir = path.join(filesDir, 'outbox');
     const sentDir = path.join(outboxDir, 'sent');
 
     // Track files present at startup so we don't re-send them
@@ -175,7 +171,7 @@ export class TelegramChannel implements Channel {
 
     const pending = new Set<string>();
 
-    this.outboxWatcher = fs.watch(outboxDir, async (event, filename) => {
+    const watcher = fs.watch(outboxDir, async (_event, filename) => {
       if (!filename || pending.has(filename)) return;
       const filePath = path.join(outboxDir, filename);
 
@@ -194,19 +190,12 @@ export class TelegramChannel implements Channel {
       // Small delay to let the write complete
       setTimeout(async () => {
         try {
-          const groups = this.opts.registeredGroups();
-          const telegramJids = Object.keys(groups).filter((jid) =>
-            jid.startsWith('tg:'),
+          const chatId = chatJid.replace(/^tg:/, '');
+          await this.bot!.api.sendDocument(
+            chatId,
+            new InputFile(filePath, filename),
           );
-
-          for (const jid of telegramJids) {
-            const chatId = jid.replace(/^tg:/, '');
-            await this.bot!.api.sendDocument(
-              chatId,
-              new InputFile(filePath, filename),
-            );
-            logger.info({ jid, filename }, 'Telegram outbox file sent');
-          }
+          logger.info({ chatJid, filename }, 'Telegram outbox file sent');
 
           // Move to sent/
           fs.renameSync(filePath, path.join(sentDir, filename));
@@ -218,12 +207,11 @@ export class TelegramChannel implements Channel {
       }, 300);
     });
 
-    logger.info({ outboxDir }, 'Telegram outbox watcher started');
+    this.outboxWatchers.set(chatJid, watcher);
+    logger.info({ chatJid, outboxDir }, 'Telegram outbox watcher started');
   }
 
   async connect(): Promise<void> {
-    this.initFileDirs();
-
     this.bot = new Bot(this.botToken, {
       client: {
         baseFetchConfig: { agent: https.globalAgent, compress: true },
@@ -317,6 +305,7 @@ export class TelegramChannel implements Channel {
         );
         return;
       }
+      this.ensureOutboxWatcher(chatJid);
 
       // Deliver message — startMessageLoop() will pick it up
       this.opts.onMessage(chatJid, {
@@ -405,6 +394,9 @@ export class TelegramChannel implements Channel {
     return new Promise<void>((resolve) => {
       this.bot!.start({
         onStart: (botInfo) => {
+          for (const jid of Object.keys(this.opts.registeredGroups())) {
+            if (jid.startsWith('tg:')) this.ensureOutboxWatcher(jid);
+          }
           logger.info(
             { username: botInfo.username, id: botInfo.id },
             'Telegram bot connected',
@@ -413,7 +405,6 @@ export class TelegramChannel implements Channel {
           console.log(
             `  Send /chatid to the bot to get a chat's registration ID\n`,
           );
-          this.startOutboxWatcher();
           resolve();
         },
       });
@@ -457,8 +448,10 @@ export class TelegramChannel implements Channel {
   }
 
   async disconnect(): Promise<void> {
-    this.outboxWatcher?.close();
-    this.outboxWatcher = null;
+    for (const watcher of this.outboxWatchers.values()) {
+      watcher.close();
+    }
+    this.outboxWatchers.clear();
     if (this.bot) {
       this.bot.stop();
       this.bot = null;

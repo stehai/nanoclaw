@@ -108,11 +108,19 @@ export function startIpcWatcher(deps: IpcDeps): void {
                   (targetGroup && targetGroup.folder === sourceGroup)
                 ) {
                   if (deps.sendImage) {
-                    // Resolve container-relative path to absolute host path
-                    const hostPath = path.join(
-                      resolveGroupFolderPath(sourceGroup),
-                      data.filePath,
-                    );
+                    // Resolve container-relative path to absolute host path and
+                    // reject any attempt to escape the group's workspace.
+                    const groupDir = resolveGroupFolderPath(sourceGroup);
+                    const hostPath = path.resolve(groupDir, data.filePath);
+                    const relative = path.relative(groupDir, hostPath);
+                    if (
+                      relative.startsWith('..') ||
+                      path.isAbsolute(relative)
+                    ) {
+                      throw new Error(
+                        `send_image path escapes group folder: ${data.filePath}`,
+                      );
+                    }
                     await deps.sendImage(data.chatJid, hostPath, data.caption);
                     logger.info(
                       { chatJid: data.chatJid, sourceGroup, hostPath },

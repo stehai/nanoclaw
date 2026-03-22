@@ -38,6 +38,12 @@ When working as a sub-agent or teammate, only use `send_message` if instructed t
 
 Files you create are saved in `/workspace/group/`. Use this for notes, research, or anything that should persist.
 
+Files sent by the user land in `/workspace/group/inbox/`.
+
+If extra directories are configured for your group, they appear under `/workspace/extra/`.
+
+Some installations also expose admin-configured allowlist mounts under `/home/node/mounts/`. Treat `/workspace/group/` as your primary working directory unless the task clearly requires one of those extra paths.
+
 ## Memory
 
 The `conversations/` folder contains searchable history of past conversations. Use this to recall context from previous sessions.

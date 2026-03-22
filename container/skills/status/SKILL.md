@@ -39,6 +39,8 @@ echo "=== Group folder ==="
 ls /workspace/group/ 2>/dev/null | head -20
 echo "=== Extra mounts ==="
 ls /workspace/extra/ 2>/dev/null || echo "none"
+echo "=== Allowlist mounts ==="
+ls /home/node/mounts/ 2>/dev/null || echo "none"
 echo "=== IPC ==="
 ls /workspace/ipc/ 2>/dev/null
 ```

@@ -16,7 +16,7 @@
 
 import fs from 'fs';
 import path from 'path';
-import { query, HookCallback, PreCompactHookInput } from '@anthropic-ai/claude-agent-sdk';
+import { query, HookCallback, PreCompactHookInput, McpServerConfig } from '@anthropic-ai/claude-agent-sdk';
 import { fileURLToPath } from 'url';
 
 interface ContainerInput {
@@ -259,6 +259,34 @@ function formatTranscriptMarkdown(messages: ParsedMessage[], title?: string | nu
 }
 
 /**
+ * Build MCP server config map.
+ * Extracted to avoid TS inference issues with conditional spreads.
+ */
+function buildMcpServers(
+  mcpServerPath: string,
+  containerInput: ContainerInput,
+): Record<string, McpServerConfig> {
+  const servers: Record<string, McpServerConfig> = {
+    nanoclaw: {
+      command: 'node',
+      args: [mcpServerPath],
+      env: {
+        NANOCLAW_CHAT_JID: containerInput.chatJid,
+        NANOCLAW_GROUP_FOLDER: containerInput.groupFolder,
+        NANOCLAW_IS_MAIN: containerInput.isMain ? '1' : '0',
+      },
+    },
+  };
+  if (process.env.OPEN_BRAIN_MCP_KEY) {
+    servers.open_brain = {
+      type: 'http',
+      url: `https://tdcoopppxwryxsnikcye.supabase.co/functions/v1/open-brain-mcp?key=${process.env.OPEN_BRAIN_MCP_KEY}`,
+    };
+  }
+  return servers;
+}
+
+/**
  * Check for _close sentinel.
  */
 function shouldClose(): boolean {
@@ -414,23 +442,7 @@ async function runQuery(
       permissionMode: 'bypassPermissions',
       allowDangerouslySkipPermissions: true,
       settingSources: ['project', 'user'],
-      mcpServers: {
-        nanoclaw: {
-          command: 'node',
-          args: [mcpServerPath],
-          env: {
-            NANOCLAW_CHAT_JID: containerInput.chatJid,
-            NANOCLAW_GROUP_FOLDER: containerInput.groupFolder,
-            NANOCLAW_IS_MAIN: containerInput.isMain ? '1' : '0',
-          },
-        },
-        ...(process.env.OPEN_BRAIN_MCP_KEY ? {
-          open_brain: {
-            type: 'http' as const,
-            url: `https://tdcoopppxwryxsnikcye.supabase.co/functions/v1/open-brain-mcp?key=${process.env.OPEN_BRAIN_MCP_KEY}`,
-          },
-        } : {}),
-      },
+      mcpServers: buildMcpServers(mcpServerPath, containerInput),
       hooks: {
         PreCompact: [{ hooks: [createPreCompactHook(containerInput.assistantName)] }],
       },
