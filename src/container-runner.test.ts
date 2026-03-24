@@ -14,6 +14,7 @@ vi.mock('./config.js', () => ({
   CREDENTIAL_PROXY_PORT: 3001,
   DATA_DIR: '/tmp/nanoclaw-test-data',
   GROUPS_DIR: '/tmp/nanoclaw-test-groups',
+  HIDRIVE_KEYS_PATH: '/tmp/nanoclaw-hidrive-keys',
   IDLE_TIMEOUT: 1800000, // 30min
   TIMEZONE: 'America/Los_Angeles',
 }));
@@ -261,16 +262,19 @@ describe('container-runner timeout behavior', () => {
         p === '/tmp/nanoclaw-test-data/ipc/test-group/input/_close'
       );
     }) as any);
-    mountSecurityMocks.loadMountAllowlist.mockImplementation((() => ({
-      allowedRoots: [
-        {
-          path: '/tmp/shared',
-          allowReadWrite: true,
-        },
-      ],
-      blockedPatterns: [],
-      nonMainReadOnly: false,
-    }) as any));
+    mountSecurityMocks.loadMountAllowlist.mockImplementation(
+      () =>
+        ({
+          allowedRoots: [
+            {
+              path: '/tmp/shared',
+              allowReadWrite: true,
+            },
+          ],
+          blockedPatterns: [],
+          nonMainReadOnly: false,
+        }) as any,
+    );
 
     const prompt =
       'Open /tmp/shared/report.txt and summarize it for me exactly as written.';
@@ -298,14 +302,17 @@ describe('container-runner timeout behavior', () => {
         p === '/tmp/nanoclaw-test-groups/test-group'
       );
     }) as any);
-    mountSecurityMocks.loadMountAllowlist.mockImplementation((() => ({
-      allowedRoots: [
-        { path: '/tmp/foo/files', allowReadWrite: true },
-        { path: '/var/data/files', allowReadWrite: true },
-      ],
-      blockedPatterns: [],
-      nonMainReadOnly: false,
-    }) as any));
+    mountSecurityMocks.loadMountAllowlist.mockImplementation(
+      () =>
+        ({
+          allowedRoots: [
+            { path: '/tmp/foo/files', allowReadWrite: true },
+            { path: '/var/data/files', allowReadWrite: true },
+          ],
+          blockedPatterns: [],
+          nonMainReadOnly: false,
+        }) as any,
+    );
 
     const resultPromise = runContainerAgent(testGroup, testInput, () => {});
 
@@ -314,8 +321,67 @@ describe('container-runner timeout behavior', () => {
     await resultPromise;
 
     const [, args] = childProcessMocks.spawn.mock.calls[0];
-    const mountArgs = args.filter((arg: string) => arg.startsWith('/tmp/foo/files:') || arg.startsWith('/var/data/files:'));
+    const mountArgs = args.filter(
+      (arg: string) =>
+        arg.startsWith('/tmp/foo/files:') || arg.startsWith('/var/data/files:'),
+    );
     expect(mountArgs).toHaveLength(2);
     expect(mountArgs[0]).not.toBe(mountArgs[1]);
+  });
+
+  it('mounts hidrive keys read-only when configured on the host', async () => {
+    fsMocks.existsSync.mockImplementation(((target: any) => {
+      const p = String(target);
+      return (
+        p === '/tmp/nanoclaw-hidrive-keys' ||
+        p === '/tmp/nanoclaw-test-groups/test-group'
+      );
+    }) as any);
+
+    const resultPromise = runContainerAgent(testGroup, testInput, () => {});
+
+    fakeProc.emit('close', 0);
+    await vi.advanceTimersByTimeAsync(10);
+    await resultPromise;
+
+    const [, args] = childProcessMocks.spawn.mock.calls[0];
+    expect(args).toContain(
+      '/tmp/nanoclaw-hidrive-keys:/workspace/extra/hidrive-keys:ro',
+    );
+  });
+
+  it('rejects additional mounts that collide with reserved hidrive path', async () => {
+    fsMocks.existsSync.mockImplementation(((target: any) => {
+      const p = String(target);
+      return (
+        p === '/tmp/nanoclaw-hidrive-keys' ||
+        p === '/tmp/nanoclaw-test-groups/test-group'
+      );
+    }) as any);
+    mountSecurityMocks.validateAdditionalMounts.mockImplementation(
+      () =>
+        [
+          {
+            hostPath: '/tmp/other-hidrive',
+            containerPath: '/workspace/extra/hidrive-keys',
+            readonly: true,
+          },
+        ] as any,
+    );
+
+    await expect(
+      runContainerAgent(
+        {
+          ...testGroup,
+          containerConfig: {
+            additionalMounts: [{ hostPath: '/tmp/other-hidrive' }],
+          },
+        },
+        testInput,
+        () => {},
+      ),
+    ).rejects.toThrow(
+      'Container mount collision at /workspace/extra/hidrive-keys',
+    );
   });
 });

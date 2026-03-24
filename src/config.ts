@@ -27,6 +27,9 @@ export const MOUNT_ALLOWLIST_PATH = path.join(
   'nanoclaw',
   'mount-allowlist.json',
 );
+export const HIDRIVE_KEYS_PATH =
+  process.env.HIDRIVE_KEYS_PATH ||
+  path.join(HOME_DIR, '.config', 'nanoclaw', 'hidrive-keys');
 export const SENDER_ALLOWLIST_PATH = path.join(
   HOME_DIR,
   '.config',

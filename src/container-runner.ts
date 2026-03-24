@@ -14,6 +14,7 @@ import {
   CREDENTIAL_PROXY_PORT,
   DATA_DIR,
   GROUPS_DIR,
+  HIDRIVE_KEYS_PATH,
   IDLE_TIMEOUT,
   TIMEZONE,
 } from './config.js';
@@ -61,6 +62,20 @@ interface VolumeMount {
   readonly: boolean;
 }
 
+function pushMount(mounts: VolumeMount[], mount: VolumeMount): void {
+  const existing = mounts.find((m) => m.containerPath === mount.containerPath);
+  if (
+    existing &&
+    (existing.hostPath !== mount.hostPath ||
+      existing.readonly !== mount.readonly)
+  ) {
+    throw new Error(
+      `Container mount collision at ${mount.containerPath}: ${existing.hostPath} and ${mount.hostPath}`,
+    );
+  }
+  if (!existing) mounts.push(mount);
+}
+
 function buildAllowlistContainerPath(hostPath: string): string {
   const normalized = path.resolve(hostPath);
   const pathKey = normalized
@@ -85,7 +100,7 @@ function buildVolumeMounts(
     // Read-only prevents the agent from modifying host application code
     // (src/, dist/, package.json, etc.) which would bypass the sandbox
     // entirely on next restart.
-    mounts.push({
+    pushMount(mounts, {
       hostPath: projectRoot,
       containerPath: '/workspace/project',
       readonly: true,
@@ -95,7 +110,7 @@ function buildVolumeMounts(
     // Credentials are injected by the credential proxy, never exposed to containers.
     const envFile = path.join(projectRoot, '.env');
     if (fs.existsSync(envFile)) {
-      mounts.push({
+      pushMount(mounts, {
         hostPath: '/dev/null',
         containerPath: '/workspace/project/.env',
         readonly: true,
@@ -103,14 +118,14 @@ function buildVolumeMounts(
     }
 
     // Main also gets its group folder as the working directory
-    mounts.push({
+    pushMount(mounts, {
       hostPath: groupDir,
       containerPath: '/workspace/group',
       readonly: false,
     });
   } else {
     // Other groups only get their own folder
-    mounts.push({
+    pushMount(mounts, {
       hostPath: groupDir,
       containerPath: '/workspace/group',
       readonly: false,
@@ -120,7 +135,7 @@ function buildVolumeMounts(
     // Only directory mounts are supported, not file mounts
     const globalDir = path.join(GROUPS_DIR, 'global');
     if (fs.existsSync(globalDir)) {
-      mounts.push({
+      pushMount(mounts, {
         hostPath: globalDir,
         containerPath: '/workspace/global',
         readonly: true,
@@ -172,7 +187,7 @@ function buildVolumeMounts(
       fs.cpSync(srcDir, dstDir, { recursive: true });
     }
   }
-  mounts.push({
+  pushMount(mounts, {
     hostPath: groupSessionsDir,
     containerPath: '/home/node/.claude',
     readonly: false,
@@ -193,7 +208,7 @@ function buildVolumeMounts(
     recursive: true,
     mode: 0o777,
   });
-  mounts.push({
+  pushMount(mounts, {
     hostPath: groupIpcDir,
     containerPath: '/workspace/ipc',
     readonly: false,
@@ -227,11 +242,19 @@ function buildVolumeMounts(
       }
     }
   }
-  mounts.push({
+  pushMount(mounts, {
     hostPath: groupAgentRunnerDir,
     containerPath: '/app/src',
     readonly: false,
   });
+
+  if (fs.existsSync(HIDRIVE_KEYS_PATH)) {
+    pushMount(mounts, {
+      hostPath: HIDRIVE_KEYS_PATH,
+      containerPath: '/workspace/extra/hidrive-keys',
+      readonly: true,
+    });
+  }
 
   // Auto-mount all allowlist roots at a container-accessible path.
   // The container runs as uid 1000 (node) which can't traverse /root/,
@@ -254,7 +277,11 @@ function buildVolumeMounts(
         );
       }
       seenContainerPaths.set(containerPath, hostPath);
-      mounts.push({ hostPath, containerPath, readonly: !writable });
+      pushMount(mounts, {
+        hostPath,
+        containerPath,
+        readonly: !writable,
+      });
     }
   }
 
@@ -265,7 +292,9 @@ function buildVolumeMounts(
       group.name,
       isMain,
     );
-    mounts.push(...validatedMounts);
+    for (const mount of validatedMounts) {
+      pushMount(mounts, mount);
+    }
   }
 
   return mounts;

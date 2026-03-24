@@ -62,3 +62,25 @@ NEVER use markdown. Only use WhatsApp/Telegram formatting:
 - ```triple backticks``` for code
 
 No ## headings. No [links](url). No **double stars**.
+
+## HiDrive Cloud Storage
+
+You have access to Strato HiDrive cloud storage. If the host has a key directory at `~/.config/nanoclaw/hidrive-keys/` (or the `HIDRIVE_KEYS_PATH` override), it is mounted read-only at `/workspace/extra/hidrive-keys/`.
+
+Before using sftp/rsync/scp, run this setup once per session:
+```bash
+mkdir -p ~/.ssh && cp /workspace/extra/hidrive-keys/strato-nanoclaw ~/.ssh/strato-nanoclaw && chmod 600 ~/.ssh/strato-nanoclaw && cat > ~/.ssh/config <<'SSHEOF'
+Host hidrive
+    HostName sftp.hidrive.strato.com
+    User nanoclaw
+    IdentityFile ~/.ssh/strato-nanoclaw
+    StrictHostKeyChecking accept-new
+SSHEOF
+```
+
+Then use the `hidrive` host alias:
+- `sftp hidrive` — interactive file browsing and transfer
+- `rsync -e "ssh -F ~/.ssh/config" hidrive:/path/ /local/path/` — sync files
+- `scp -F ~/.ssh/config hidrive:/path/file .` — copy single files
+
+Use `/users/nanoclaw/nanoclaw-agent/` as your exclusive HiDrive workspace. Store task files, uploads, downloads, sync targets, and any other remote artifacts only inside that directory or its subdirectories. Do not read from, write to, or modify other HiDrive directories unless the user explicitly instructs you to do so.

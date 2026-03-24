@@ -102,6 +102,9 @@ grep -E 'Mount validated|Mount.*REJECTED|mount' logs/nanoclaw.log | tail -10
 # Verify the mount allowlist is readable
 cat ~/.config/nanoclaw/mount-allowlist.json
 
+# If HiDrive is expected, verify the host key directory exists
+ls -la ~/.config/nanoclaw/hidrive-keys
+
 # Check group's container_config in DB
 sqlite3 store/messages.db "SELECT name, container_config FROM registered_groups;"
 
