@@ -83,4 +83,44 @@ Then use the `hidrive` host alias:
 - `rsync -e "ssh -F ~/.ssh/config" hidrive:/path/ /local/path/` — sync files
 - `scp -F ~/.ssh/config hidrive:/path/file .` — copy single files
 
-Use `/users/nanoclaw/nanoclaw-agent/` as your exclusive HiDrive workspace. Store task files, uploads, downloads, sync targets, and any other remote artifacts only inside that directory or its subdirectories. Do not read from, write to, or modify other HiDrive directories unless the user explicitly instructs you to do so.
+Use `/nanoclaw-agent/` as your exclusive HiDrive workspace. Store task files, uploads, downloads, sync targets, and any other remote artifacts only inside that directory or its subdirectories. Do not read from, write to, or modify other HiDrive directories unless the user explicitly instructs you to do so.
+
+### HiDrive Workspace Policy
+
+The exclusive HiDrive workspace contains three special subdirectories:
+
+#### `clipboard/`
+
+Purpose: temporary file exchange between the user and NanoClaw.
+
+Rules:
+- Use `clipboard/` for short-lived files the user wants NanoClaw to read, inspect, transform, import, export, or hand back.
+- NanoClaw may create, modify, and delete files in `clipboard/` when needed for active tasks.
+- Prefer clear filenames. For batches of temporary files, use dated subfolders such as `clipboard/2026-03/`.
+- Treat everything in `clipboard/` as temporary, not permanent storage.
+- Files older than 30 days should be deleted by the recurring cleanup task.
+
+#### `archive/`
+
+Purpose: long-term storage.
+
+Rules:
+- Do not move or copy files into `archive/` unless the user explicitly tells you to archive them.
+- Treat archived files as durable records and avoid modifying them unless the user explicitly asks.
+- When archiving, organize files into meaningful subfolders based on project, topic, date, or document type.
+- Do not dump loose files into the root of `archive/` unless the user explicitly requests that structure.
+
+#### `projects/`
+
+Purpose: dedicated workspaces for user-requested projects.
+
+Rules:
+- Each project must have its own subfolder under `projects/`.
+- Use descriptive project folder names.
+- Store project-specific inputs, outputs, notes, drafts, and deliverables inside that project folder.
+- Do not mix files from different projects in the same folder unless the user explicitly asks.
+- If the user starts a new project and no folder exists yet, create a new subfolder under `projects/`.
+
+General rules:
+- Prefer `projects/` for ongoing work, `clipboard/` for temporary exchange, and `archive/` only for explicitly approved long-term storage.
+- If there is any doubt whether something belongs in `archive/`, ask before moving it there.

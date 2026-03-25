@@ -1,0 +1,8 @@
+#!/bin/bash
+set -euo pipefail
+
+if [ -f /tmp/dist/hidrive-clipboard-cleanup.js ]; then
+  exec node /tmp/dist/hidrive-clipboard-cleanup.js "$@"
+fi
+
+exec node /app/dist/hidrive-clipboard-cleanup.js "$@"

@@ -52,7 +52,7 @@ RUN npm run build
 
 # Install NanoClaw tools (generate-image, etc.) into PATH
 COPY tools/ /usr/local/bin/
-RUN chmod +x /usr/local/bin/generate-image
+RUN chmod +x /usr/local/bin/generate-image /usr/local/bin/hidrive-clipboard-cleanup
 
 # Create workspace directories
 RUN mkdir -p /workspace/group /workspace/global /workspace/extra /workspace/ipc/messages /workspace/ipc/tasks /workspace/ipc/input

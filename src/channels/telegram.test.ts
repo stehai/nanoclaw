@@ -640,7 +640,8 @@ describe('TelegramChannel', () => {
       expect(opts.onMessage).toHaveBeenCalledWith(
         'tg:100200300',
         expect.objectContaining({
-          content: '[File received: /workspace/group/inbox/photo-1774180800000.jpg]',
+          content:
+            '[File received: /workspace/group/inbox/photo-1774180800000.jpg]',
         }),
       );
     });
@@ -737,8 +738,7 @@ describe('TelegramChannel', () => {
       expect(opts.onMessage).toHaveBeenCalledWith(
         'tg:100200300',
         expect.objectContaining({
-          content:
-            '[File received: /workspace/group/inbox/file-1774180800000]',
+          content: '[File received: /workspace/group/inbox/file-1774180800000]',
         }),
       );
     });

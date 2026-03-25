@@ -159,9 +159,12 @@ describe('TelegramChannel file paths', () => {
       await pending;
     }
 
-    expect(fsMocks.mkdirSyncMock).toHaveBeenCalledWith('/tmp/groups/test-group/inbox', {
-      recursive: true,
-    });
+    expect(fsMocks.mkdirSyncMock).toHaveBeenCalledWith(
+      '/tmp/groups/test-group/inbox',
+      {
+        recursive: true,
+      },
+    );
     expect(fsMocks.mkdirSyncMock).toHaveBeenCalledWith(
       '/tmp/groups/test-group/outbox/sent',
       { recursive: true },

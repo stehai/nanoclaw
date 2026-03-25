@@ -4,10 +4,7 @@ import path from 'path';
 
 import { Api, Bot, InputFile } from 'grammy';
 
-import {
-  ASSISTANT_NAME,
-  TRIGGER_PATTERN,
-} from '../config.js';
+import { ASSISTANT_NAME, TRIGGER_PATTERN } from '../config.js';
 import { readEnvFile } from '../env.js';
 import { resolveGroupFolderPath } from '../group-folder.js';
 import { logger } from '../logger.js';
@@ -142,7 +139,10 @@ export class TelegramChannel implements Channel {
         is_from_me: false,
       });
 
-      logger.info({ chatJid, destPath, agentPath }, 'Telegram file saved to inbox');
+      logger.info(
+        { chatJid, destPath, agentPath },
+        'Telegram file saved to inbox',
+      );
     } catch (err) {
       logger.error(
         { err, chatJid, fileName },
