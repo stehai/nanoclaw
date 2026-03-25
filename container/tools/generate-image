@@ -11,7 +11,7 @@
  * Requires: GOOGLE_GEMINI_API_KEY environment variable
  */
 
-import { writeFileSync, readFileSync, mkdirSync } from 'node:fs';
+import { appendFileSync, writeFileSync, readFileSync, mkdirSync } from 'node:fs';
 import { dirname, extname } from 'node:path';
 import { parseArgs } from 'node:util';
 
@@ -26,14 +26,42 @@ const { values: args } = parseArgs({
 
 const prompt = args.prompt;
 const inputPath = args.input;
+const logDir = '/workspace/group/logs';
+const logPath = `${logDir}/google-api.log`;
+const endpointBase = 'https://generativelanguage.googleapis.com/v1beta';
+
+function logGoogleApi(event, details = {}) {
+  const entry = {
+    ts: new Date().toISOString(),
+    tool: 'generate-image',
+    provider: 'google',
+    api: 'gemini-imagen',
+    event,
+    ...details,
+  };
+
+  try {
+    mkdirSync(logDir, { recursive: true });
+    appendFileSync(logPath, `${JSON.stringify(entry)}\n`);
+  } catch (err) {
+    const message = err instanceof Error ? err.message : String(err);
+    console.error(`Failed to write Google API log: ${message}`);
+  }
+}
 
 if (!prompt) {
+  logGoogleApi('validation_error', {
+    error: '--prompt is required',
+  });
   console.error('Error: --prompt is required');
   process.exit(1);
 }
 
 const apiKey = process.env.GOOGLE_GEMINI_API_KEY;
 if (!apiKey) {
+  logGoogleApi('config_error', {
+    error: 'GOOGLE_GEMINI_API_KEY environment variable is not set',
+  });
   console.error('Error: GOOGLE_GEMINI_API_KEY environment variable is not set');
   process.exit(1);
 }
@@ -47,6 +75,7 @@ const outputPath = args.output ?? (() => {
 mkdirSync(dirname(outputPath), { recursive: true });
 
 let model, body;
+let operation;
 
 if (inputPath) {
   // Image editing mode
@@ -59,6 +88,7 @@ if (inputPath) {
     'image/png';
 
   model = 'imagen-3.0-capability-001';
+  operation = 'edit';
   body = {
     instances: [{
       prompt,
@@ -72,6 +102,7 @@ if (inputPath) {
 } else {
   // Text-to-image generation mode
   model = 'imagen-3.0-generate-002';
+  operation = 'generate';
   body = {
     instances: [{ prompt }],
     parameters: { sampleCount: 1 },
@@ -79,6 +110,15 @@ if (inputPath) {
 }
 
 const url = `https://generativelanguage.googleapis.com/v1beta/models/${model}:predict?key=${apiKey}`;
+const requestStartedAt = Date.now();
+
+logGoogleApi('request_start', {
+  model,
+  operation,
+  endpoint: `${endpointBase}/models/${model}:predict`,
+  inputPath: inputPath ?? null,
+  outputPath,
+});
 
 let response;
 try {
@@ -88,7 +128,17 @@ try {
     body: JSON.stringify(body),
   });
 } catch (err) {
-  console.error('Network error calling Gemini API:', err.message);
+  const errorMessage = err instanceof Error ? err.message : String(err);
+  logGoogleApi('network_error', {
+    model,
+    operation,
+    endpoint: `${endpointBase}/models/${model}:predict`,
+    inputPath: inputPath ?? null,
+    outputPath,
+    durationMs: Date.now() - requestStartedAt,
+    error: errorMessage,
+  });
+  console.error('Network error calling Gemini API:', errorMessage);
   process.exit(1);
 }
 
@@ -98,21 +148,60 @@ if (!response.ok || result.error) {
   const errDetail = result.error
     ? JSON.stringify(result.error, null, 2)
     : `HTTP ${response.status}`;
+  logGoogleApi('request_error', {
+    model,
+    operation,
+    endpoint: `${endpointBase}/models/${model}:predict`,
+    inputPath: inputPath ?? null,
+    outputPath,
+    durationMs: Date.now() - requestStartedAt,
+    status: response.status,
+    statusText: response.statusText,
+    error: result.error ?? errDetail,
+  });
   console.error('Gemini API error:', errDetail);
   process.exit(1);
 }
 
 const predictions = result.predictions;
 if (!predictions?.length) {
+  logGoogleApi('response_error', {
+    model,
+    operation,
+    endpoint: `${endpointBase}/models/${model}:predict`,
+    inputPath: inputPath ?? null,
+    outputPath,
+    durationMs: Date.now() - requestStartedAt,
+    error: 'No predictions returned',
+  });
   console.error('No predictions returned. Response:', JSON.stringify(result, null, 2));
   process.exit(1);
 }
 
 const b64Image = predictions[0].bytesBase64Encoded;
 if (!b64Image) {
+  logGoogleApi('response_error', {
+    model,
+    operation,
+    endpoint: `${endpointBase}/models/${model}:predict`,
+    inputPath: inputPath ?? null,
+    outputPath,
+    durationMs: Date.now() - requestStartedAt,
+    error: 'No image data in prediction',
+  });
   console.error('No image data in prediction:', JSON.stringify(predictions[0], null, 2));
   process.exit(1);
 }
 
 writeFileSync(outputPath, Buffer.from(b64Image, 'base64'));
+logGoogleApi('request_success', {
+  model,
+  operation,
+  endpoint: `${endpointBase}/models/${model}:predict`,
+  inputPath: inputPath ?? null,
+  outputPath,
+  durationMs: Date.now() - requestStartedAt,
+  status: response.status,
+  predictionCount: predictions.length,
+});
 console.log(outputPath);

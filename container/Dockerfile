@@ -3,7 +3,7 @@
 
 FROM node:22-slim
 
-# Install system dependencies for Chromium
+# Install system dependencies for Chromium and PDF tools
 RUN apt-get update && apt-get install -y \
     chromium \
     fonts-liberation \
@@ -25,6 +25,7 @@ RUN apt-get update && apt-get install -y \
     curl \
     git \
     openssh-client \
+    poppler-utils \
     rsync \
     && rm -rf /var/lib/apt/lists/*
 
@@ -53,6 +54,10 @@ RUN npm run build
 # Install NanoClaw tools (generate-image, etc.) into PATH
 COPY tools/ /usr/local/bin/
 RUN chmod +x /usr/local/bin/generate-image /usr/local/bin/hidrive-clipboard-cleanup
+
+# Install pdf-reader CLI
+COPY skills/pdf-reader/pdf-reader /usr/local/bin/pdf-reader
+RUN chmod +x /usr/local/bin/pdf-reader
 
 # Create workspace directories
 RUN mkdir -p /workspace/group /workspace/global /workspace/extra /workspace/ipc/messages /workspace/ipc/tasks /workspace/ipc/input
