@@ -140,8 +140,7 @@ export class SlackChannel implements Channel {
 
       // After filtering, event is one of the handled Slack message variants.
       const msg = event as HandledMessageEvent;
-      const files =
-        'files' in msg && Array.isArray(msg.files) ? msg.files : [];
+      const files = 'files' in msg && Array.isArray(msg.files) ? msg.files : [];
 
       // Threaded replies are flattened into the channel conversation.
       // The agent sees them alongside channel-level messages; responses
@@ -210,7 +209,10 @@ export class SlackChannel implements Channel {
           try {
             await downloadSlackFile(downloadUrl, destPath, this.botToken);
             fileMarkers.push(`[File received: ${agentPath}]`);
-            logger.info({ jid, destPath, agentPath }, 'Slack file saved to inbox');
+            logger.info(
+              { jid, destPath, agentPath },
+              'Slack file saved to inbox',
+            );
           } catch (err) {
             logger.error(
               { jid, fileName, downloadUrl, err },
