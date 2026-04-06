@@ -40,38 +40,73 @@ async function downloadSlackFile(
   url: string,
   destPath: string,
   token: string,
+  maxRedirects = 5,
 ): Promise<void> {
   return new Promise((resolve, reject) => {
     const file = fs.createWriteStream(destPath);
+    let settled = false;
     const cleanup = (err: Error) => {
+      if (settled) return;
+      settled = true;
       fs.unlink(destPath, () => {});
       reject(err);
+    };
+    const finish = () => {
+      if (settled) return;
+      settled = true;
+      resolve();
     };
 
     file.on('error', cleanup);
 
-    const req = https.get(
-      url,
-      {
-        headers: { Authorization: `Bearer ${token}` },
-        agent: https.globalAgent,
-      },
-      (res) => {
-        if ((res.statusCode ?? 500) >= 400) {
-          const err = new Error(
-            `Slack file download failed (${res.statusCode ?? 'unknown'} ${res.statusMessage ?? ''})`,
-          );
-          res.resume();
-          file.close(() => cleanup(err));
-          return;
-        }
+    const fetchUrl = (
+      currentUrl: string,
+      redirectsLeft: number,
+      includeAuth: boolean,
+    ) => {
+      const req = https.get(
+        currentUrl,
+        {
+          headers: includeAuth ? { Authorization: `Bearer ${token}` } : {},
+          agent: https.globalAgent,
+        },
+        (res) => {
+          const status = res.statusCode ?? 500;
+          if (status >= 300 && status < 400 && res.headers.location) {
+            res.resume();
+            if (redirectsLeft <= 0) {
+              file.close(() =>
+                cleanup(new Error('Too many redirects downloading Slack file')),
+              );
+              return;
+            }
 
-        file.on('finish', () => file.close(() => resolve()));
-        res.pipe(file);
-      },
-    );
+            const nextUrl = new URL(res.headers.location, currentUrl).toString();
+            const nextHost = new URL(nextUrl).hostname.toLowerCase();
+            const keepAuth =
+              nextHost === 'slack.com' || nextHost.endsWith('.slack.com');
+            fetchUrl(nextUrl, redirectsLeft - 1, keepAuth);
+            return;
+          }
 
-    req.on('error', (err) => file.close(() => cleanup(err)));
+          if (status >= 400) {
+            const err = new Error(
+              `Slack file download failed (${status} ${res.statusMessage ?? ''})`,
+            );
+            res.resume();
+            file.close(() => cleanup(err));
+            return;
+          }
+
+          file.once('finish', () => file.close(() => finish()));
+          res.pipe(file);
+        },
+      );
+
+      req.on('error', (err) => file.close(() => cleanup(err)));
+    };
+
+    fetchUrl(url, maxRedirects, true);
   });
 }
 

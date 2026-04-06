@@ -53,8 +53,15 @@ vi.mock('fs', async () => {
   };
 });
 
+type MockHttpResponse = {
+  statusCode: number;
+  location?: string;
+  statusMessage?: string;
+};
+
 const httpState = vi.hoisted(() => ({
-  statusCode: 200,
+  responses: [] as MockHttpResponse[],
+  calls: [] as Array<{ url: string; opts: any }>,
 }));
 
 vi.mock('https', async () => {
@@ -64,13 +71,20 @@ vi.mock('https', async () => {
     default: {
       ...actual,
       globalAgent: {},
-      get: vi.fn((_url: string, _opts: object, cb: (res: any) => void) => {
+      get: vi.fn((url: string, opts: object, cb: (res: any) => void) => {
+        httpState.calls.push({ url, opts });
+        const current = httpState.responses.shift() || { statusCode: 200 };
         const res = {
-          statusCode: httpState.statusCode,
-          statusMessage: httpState.statusCode >= 400 ? 'Forbidden' : 'OK',
+          statusCode: current.statusCode,
+          statusMessage:
+            current.statusMessage ||
+            (current.statusCode >= 400 ? 'Forbidden' : 'OK'),
+          headers: current.location ? { location: current.location } : {},
           resume: vi.fn(),
           pipe: (file: EventEmitter) => {
-            if (httpState.statusCode < 400) file.emit('finish');
+            if (current.statusCode < 300 || current.statusCode >= 400) {
+              file.emit('finish');
+            }
           },
         };
         cb(res);
@@ -177,10 +191,12 @@ describe('SlackChannel inbound file shares', () => {
     vi.clearAllMocks();
     vi.useFakeTimers();
     vi.setSystemTime(new Date('2026-03-22T12:00:00.000Z'));
-    httpState.statusCode = 200;
+    httpState.responses = [];
+    httpState.calls = [];
   });
 
   it('downloads shared files to group inbox and appends file marker to content', async () => {
+    httpState.responses = [{ statusCode: 200 }];
     const opts = createTestOpts(true);
     const channel = new SlackChannel(opts);
     await channel.connect();
@@ -206,6 +222,7 @@ describe('SlackChannel inbound file shares', () => {
   });
 
   it('keeps mention translation when file marker is appended', async () => {
+    httpState.responses = [{ statusCode: 200 }];
     const opts = createTestOpts(true);
     const channel = new SlackChannel(opts);
     await channel.connect();
@@ -223,6 +240,36 @@ describe('SlackChannel inbound file shares', () => {
     );
   });
 
+  it('follows redirect to CDN and drops auth header on non-Slack hop', async () => {
+    httpState.responses = [
+      {
+        statusCode: 302,
+        location: 'https://files.slack-edge.com/files-pri/T/F123/report',
+      },
+      { statusCode: 200 },
+    ];
+    const opts = createTestOpts(true);
+    const channel = new SlackChannel(opts);
+    await channel.connect();
+
+    await triggerMessageEvent(fileShareEvent());
+
+    expect(httpState.calls).toHaveLength(2);
+    expect(httpState.calls[0].url).toContain('files.slack.com');
+    expect(httpState.calls[0].opts.headers.Authorization).toBe(
+      'Bearer xoxb-test-token',
+    );
+    expect(httpState.calls[1].url).toContain('files.slack-edge.com');
+    expect(httpState.calls[1].opts.headers.Authorization).toBeUndefined();
+    expect(opts.onMessage).toHaveBeenCalledWith(
+      'slack:C0123456789',
+      expect.objectContaining({
+        content:
+          'Please review this\n[File received: /workspace/group/inbox/report-1774180800000.pdf]',
+      }),
+    );
+  });
+
   it('does not download files for unregistered channels', async () => {
     const opts = createTestOpts(false);
     const channel = new SlackChannel(opts);
@@ -236,7 +283,7 @@ describe('SlackChannel inbound file shares', () => {
   });
 
   it('logs download failures and still delivers text content', async () => {
-    httpState.statusCode = 403;
+    httpState.responses = [{ statusCode: 403 }];
     const opts = createTestOpts(true);
     const channel = new SlackChannel(opts);
     await channel.connect();
