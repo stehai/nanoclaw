@@ -36,7 +36,9 @@ type HandledMessageEvent =
 
 type SlackInboundFile = NonNullable<FileShareMessageEvent['files']>[number];
 
-function headerAsString(value: string | string[] | undefined): string | undefined {
+function headerAsString(
+  value: string | string[] | undefined,
+): string | undefined {
   return Array.isArray(value) ? value[0] : value;
 }
 

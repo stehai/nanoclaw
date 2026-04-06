@@ -84,7 +84,9 @@ vi.mock('https', async () => {
               : current.statusCode >= 300
                 ? 'Found'
                 : 'OK'),
-          headers: current.headers || (current.location ? { location: current.location } : {}),
+          headers:
+            current.headers ||
+            (current.location ? { location: current.location } : {}),
           resume: vi.fn(),
           pipe: (file: EventEmitter) => {
             if (current.statusCode < 300 || current.statusCode >= 400) {
