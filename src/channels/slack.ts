@@ -36,6 +36,22 @@ type HandledMessageEvent =
 
 type SlackInboundFile = NonNullable<FileShareMessageEvent['files']>[number];
 
+function headerAsString(value: string | string[] | undefined): string | undefined {
+  return Array.isArray(value) ? value[0] : value;
+}
+
+function isSlackOwnedHost(hostname: string): boolean {
+  const host = hostname.toLowerCase();
+  return (
+    host === 'slack.com' ||
+    host.endsWith('.slack.com') ||
+    host === 'slack-edge.com' ||
+    host.endsWith('.slack-edge.com') ||
+    host === 'slack-files.com' ||
+    host.endsWith('.slack-files.com')
+  );
+}
+
 async function downloadSlackFile(
   url: string,
   destPath: string,
@@ -59,11 +75,9 @@ async function downloadSlackFile(
 
     file.on('error', cleanup);
 
-    const fetchUrl = (
-      currentUrl: string,
-      redirectsLeft: number,
-      includeAuth: boolean,
-    ) => {
+    const fetchUrl = (currentUrl: string, redirectsLeft: number) => {
+      const host = new URL(currentUrl).hostname;
+      const includeAuth = isSlackOwnedHost(host);
       const req = https.get(
         currentUrl,
         {
@@ -72,8 +86,19 @@ async function downloadSlackFile(
         },
         (res) => {
           const status = res.statusCode ?? 500;
-          if (status >= 300 && status < 400 && res.headers.location) {
+          if (status >= 300 && status < 400) {
             res.resume();
+            const location = headerAsString(res.headers.location);
+            if (!location) {
+              file.close(() =>
+                cleanup(
+                  new Error(
+                    `Slack file download redirect missing Location header (${status})`,
+                  ),
+                ),
+              );
+              return;
+            }
             if (redirectsLeft <= 0) {
               file.close(() =>
                 cleanup(new Error('Too many redirects downloading Slack file')),
@@ -81,14 +106,8 @@ async function downloadSlackFile(
               return;
             }
 
-            const nextUrl = new URL(
-              res.headers.location,
-              currentUrl,
-            ).toString();
-            const nextHost = new URL(nextUrl).hostname.toLowerCase();
-            const keepAuth =
-              nextHost === 'slack.com' || nextHost.endsWith('.slack.com');
-            fetchUrl(nextUrl, redirectsLeft - 1, keepAuth);
+            const nextUrl = new URL(location, currentUrl).toString();
+            fetchUrl(nextUrl, redirectsLeft - 1);
             return;
           }
 
@@ -101,6 +120,21 @@ async function downloadSlackFile(
             return;
           }
 
+          const contentType = (
+            headerAsString(res.headers['content-type']) || ''
+          ).toLowerCase();
+          if (contentType.includes('text/html')) {
+            res.resume();
+            file.close(() =>
+              cleanup(
+                new Error(
+                  `Slack file download returned HTML payload (${contentType || 'unknown content type'})`,
+                ),
+              ),
+            );
+            return;
+          }
+
           file.once('finish', () => file.close(() => finish()));
           res.pipe(file);
         },
@@ -109,7 +143,7 @@ async function downloadSlackFile(
       req.on('error', (err) => file.close(() => cleanup(err)));
     };
 
-    fetchUrl(url, maxRedirects, true);
+    fetchUrl(url, maxRedirects);
   });
 }
 

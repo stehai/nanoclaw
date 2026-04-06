@@ -57,6 +57,7 @@ type MockHttpResponse = {
   statusCode: number;
   location?: string;
   statusMessage?: string;
+  headers?: Record<string, string>;
 };
 
 const httpState = vi.hoisted(() => ({
@@ -78,8 +79,12 @@ vi.mock('https', async () => {
           statusCode: current.statusCode,
           statusMessage:
             current.statusMessage ||
-            (current.statusCode >= 400 ? 'Forbidden' : 'OK'),
-          headers: current.location ? { location: current.location } : {},
+            (current.statusCode >= 400
+              ? 'Forbidden'
+              : current.statusCode >= 300
+                ? 'Found'
+                : 'OK'),
+          headers: current.headers || (current.location ? { location: current.location } : {}),
           resume: vi.fn(),
           pipe: (file: EventEmitter) => {
             if (current.statusCode < 300 || current.statusCode >= 400) {
@@ -240,7 +245,7 @@ describe('SlackChannel inbound file shares', () => {
     );
   });
 
-  it('follows redirect to CDN and drops auth header on non-Slack hop', async () => {
+  it('follows redirect to Slack CDN and keeps auth header', async () => {
     httpState.responses = [
       {
         statusCode: 302,
@@ -260,6 +265,38 @@ describe('SlackChannel inbound file shares', () => {
       'Bearer xoxb-test-token',
     );
     expect(httpState.calls[1].url).toContain('files.slack-edge.com');
+    expect(httpState.calls[1].opts.headers.Authorization).toBe(
+      'Bearer xoxb-test-token',
+    );
+    expect(opts.onMessage).toHaveBeenCalledWith(
+      'slack:C0123456789',
+      expect.objectContaining({
+        content:
+          'Please review this\n[File received: /workspace/group/inbox/report-1774180800000.pdf]',
+      }),
+    );
+  });
+
+  it('drops auth header on non-Slack redirect hop', async () => {
+    httpState.responses = [
+      {
+        statusCode: 302,
+        location: 'https://example.com/files/report',
+      },
+      { statusCode: 200 },
+    ];
+    const opts = createTestOpts(true);
+    const channel = new SlackChannel(opts);
+    await channel.connect();
+
+    await triggerMessageEvent(fileShareEvent());
+
+    expect(httpState.calls).toHaveLength(2);
+    expect(httpState.calls[0].url).toContain('files.slack.com');
+    expect(httpState.calls[0].opts.headers.Authorization).toBe(
+      'Bearer xoxb-test-token',
+    );
+    expect(httpState.calls[1].url).toContain('example.com');
     expect(httpState.calls[1].opts.headers.Authorization).toBeUndefined();
     expect(opts.onMessage).toHaveBeenCalledWith(
       'slack:C0123456789',
@@ -301,6 +338,34 @@ describe('SlackChannel inbound file shares', () => {
       'slack:C0123456789',
       expect.objectContaining({
         content: 'Fallback text only',
+      }),
+    );
+  });
+
+  it('rejects html payloads and keeps text-only content', async () => {
+    httpState.responses = [
+      {
+        statusCode: 200,
+        headers: { 'content-type': 'text/html; charset=utf-8' },
+      },
+    ];
+    const opts = createTestOpts(true);
+    const channel = new SlackChannel(opts);
+    await channel.connect();
+
+    await triggerMessageEvent(fileShareEvent({ text: 'Text with file' }));
+
+    expect(logger.error).toHaveBeenCalledWith(
+      expect.objectContaining({
+        jid: 'slack:C0123456789',
+        fileName: 'report-1774180800000.pdf',
+      }),
+      'Failed to download Slack file',
+    );
+    expect(opts.onMessage).toHaveBeenCalledWith(
+      'slack:C0123456789',
+      expect.objectContaining({
+        content: 'Text with file',
       }),
     );
   });
