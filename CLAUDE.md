@@ -55,6 +55,11 @@ systemctl --user stop nanoclaw
 systemctl --user restart nanoclaw
 ```
 
+File ownership (root sessions):
+- If the Codex session runs as `root`, restore ownership of every touched path to `nanoclaw:nanoclaw` at the end of the task.
+- Apply ownership fixes to touched paths only (do not run recursive whole-repo `chown` by default).
+- Preserve existing file and directory modes; do not change permissions unless explicitly required.
+
 ## Troubleshooting
 
 **WhatsApp not connecting after upgrade:** WhatsApp is now a separate channel fork, not bundled in core. Run `/add-whatsapp` (or `git remote add whatsapp https://github.com/qwibitai/nanoclaw-whatsapp.git && git fetch whatsapp main && (git merge whatsapp/main || { git checkout --theirs package-lock.json && git add package-lock.json && git merge --continue; }) && npm run build`) to install it. Existing auth credentials and groups are preserved.
@@ -62,3 +67,27 @@ systemctl --user restart nanoclaw
 ## Container Build Cache
 
 The container buildkit caches the build context aggressively. `--no-cache` alone does NOT invalidate COPY steps — the builder's volume retains stale files. To force a truly clean rebuild, prune the builder then re-run `./container/build.sh`.
+
+# Learning
+
+## Track two types of knowledge:
+- Domain: what things are (product context, user preferences, APIs, naming conventions, team decisions
+- Procedural: how to do thing (deploy steps, test commands, review flows)
+
+## Organize knowledge as a hierarchy of .md files:
+- knowledge/INDEX.md routes to categories
+- Categories hold the details
+- Progressive disclosure. Read top-down, only load what you need.
+
+## Log errors to knowledge/ERRORS.md. Not every error is a mistake:
+- Deterministic errors (bad schema, wrong type, missing field) → conclude immediatel
+- Infrastructure errors (timeout, rate limit, network) → log, no conclusion until pattern emerge
+- Conclusions graduate into the relevant domain or procedural file
+
+## Actively manage the knowledge system. This is as important as the current task:
+- Review knowledge files at the start of each session
+- Merge overlapping categories
+- Split files that grow too long
+- Remove knowledge that's no longer accurate
+- Create new categories when patterns emerge
+- When you notice something that should be in CLAUDE.md but isn't — a pattern, a preference, a correction — propose the edit. Don't wait to be asked.
