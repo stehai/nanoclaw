@@ -1,12 +1,18 @@
 import fs from 'fs';
+import https from 'https';
 import path from 'path';
 
 import { App, LogLevel } from '@slack/bolt';
-import type { GenericMessageEvent, BotMessageEvent } from '@slack/types';
+import type {
+  BotMessageEvent,
+  FileShareMessageEvent,
+  GenericMessageEvent,
+} from '@slack/types';
 
 import { ASSISTANT_NAME, TRIGGER_PATTERN } from '../config.js';
 import { updateChatName } from '../db.js';
 import { readEnvFile } from '../env.js';
+import { resolveGroupFolderPath } from '../group-folder.js';
 import { logger } from '../logger.js';
 import { registerChannel, ChannelOpts } from './registry.js';
 import {
@@ -21,9 +27,60 @@ import {
 const MAX_MESSAGE_LENGTH = 4000;
 
 // The message subtypes we process. Bolt delivers all subtypes via app.event('message');
-// we filter to regular messages (GenericMessageEvent, subtype undefined) and bot messages
-// (BotMessageEvent, subtype 'bot_message') so we can track our own output.
-type HandledMessageEvent = GenericMessageEvent | BotMessageEvent;
+// we filter to regular messages (GenericMessageEvent, subtype undefined), bot messages
+// (BotMessageEvent, subtype 'bot_message'), and file shares.
+type HandledMessageEvent =
+  | GenericMessageEvent
+  | BotMessageEvent
+  | FileShareMessageEvent;
+
+type SlackInboundFile = NonNullable<FileShareMessageEvent['files']>[number];
+
+async function downloadSlackFile(
+  url: string,
+  destPath: string,
+  token: string,
+): Promise<void> {
+  return new Promise((resolve, reject) => {
+    const file = fs.createWriteStream(destPath);
+    const cleanup = (err: Error) => {
+      fs.unlink(destPath, () => {});
+      reject(err);
+    };
+
+    file.on('error', cleanup);
+
+    const req = https.get(
+      url,
+      {
+        headers: { Authorization: `Bearer ${token}` },
+        agent: https.globalAgent,
+      },
+      (res) => {
+        if ((res.statusCode ?? 500) >= 400) {
+          const err = new Error(
+            `Slack file download failed (${res.statusCode ?? 'unknown'} ${res.statusMessage ?? ''})`,
+          );
+          res.resume();
+          file.close(() => cleanup(err));
+          return;
+        }
+
+        file.on('finish', () => file.close(() => resolve()));
+        res.pipe(file);
+      },
+    );
+
+    req.on('error', (err) => file.close(() => cleanup(err)));
+  });
+}
+
+function toSafeFileName(file: SlackInboundFile): string {
+  const original = path.basename(file.name || file.id || 'file');
+  const ext = path.extname(original) || '';
+  const base = path.basename(original, ext).replace(/[^\w.-]+/g, '-');
+  return `${base || 'file'}-${Date.now()}${ext}`;
+}
 
 export interface SlackChannelOpts {
   onMessage: OnInboundMessage;
@@ -40,6 +97,7 @@ export class SlackChannel implements Channel {
   private outgoingQueue: Array<{ jid: string; text: string }> = [];
   private flushing = false;
   private userNameCache = new Map<string, string>();
+  private botToken: string;
 
   private opts: SlackChannelOpts;
 
@@ -57,6 +115,7 @@ export class SlackChannel implements Channel {
         'SLACK_BOT_TOKEN and SLACK_APP_TOKEN must be set in .env',
       );
     }
+    this.botToken = botToken;
 
     this.app = new App({
       token: botToken,
@@ -70,17 +129,19 @@ export class SlackChannel implements Channel {
 
   private setupEventHandlers(): void {
     // Use app.event('message') instead of app.message() to capture all
-    // message subtypes including bot_message (needed to track our own output)
+    // message subtypes including bot_message and file_share.
     this.app.event('message', async ({ event }) => {
       // Bolt's event type is the full MessageEvent union (17+ subtypes).
-      // We filter on subtype first, then narrow to the two types we handle.
+      // We filter on subtype first, then narrow to the message types we handle.
       const subtype = (event as { subtype?: string }).subtype;
-      if (subtype && subtype !== 'bot_message') return;
+      if (subtype && subtype !== 'bot_message' && subtype !== 'file_share') {
+        return;
+      }
 
-      // After filtering, event is either GenericMessageEvent or BotMessageEvent
+      // After filtering, event is one of the handled Slack message variants.
       const msg = event as HandledMessageEvent;
-
-      if (!msg.text) return;
+      const files =
+        'files' in msg && Array.isArray(msg.files) ? msg.files : [];
 
       // Threaded replies are flattened into the channel conversation.
       // The agent sees them alongside channel-level messages; responses
@@ -96,24 +157,27 @@ export class SlackChannel implements Channel {
       // Only deliver full messages for registered groups
       const groups = this.opts.registeredGroups();
       if (!groups[jid]) return;
+      const group = groups[jid];
 
-      const isBotMessage = !!msg.bot_id || msg.user === this.botUserId;
+      const userId = msg.user;
+      const botId = 'bot_id' in msg ? msg.bot_id : undefined;
+      const isBotMessage = !!botId || userId === this.botUserId;
 
       let senderName: string;
       if (isBotMessage) {
         senderName = ASSISTANT_NAME;
       } else {
         senderName =
-          (msg.user ? await this.resolveUserName(msg.user) : undefined) ||
-          msg.user ||
+          (userId ? await this.resolveUserName(userId) : undefined) ||
+          userId ||
           'unknown';
       }
 
       // Translate Slack <@UBOTID> mentions into TRIGGER_PATTERN format.
       // Slack encodes @mentions as <@U12345>, which won't match TRIGGER_PATTERN
       // (e.g., ^@<ASSISTANT_NAME>\b), so we prepend the trigger when the bot is @mentioned.
-      let content = msg.text;
-      if (this.botUserId && !isBotMessage) {
+      let content = msg.text || '';
+      if (content && this.botUserId && !isBotMessage) {
         const mentionPattern = `<@${this.botUserId}>`;
         if (
           content.includes(mentionPattern) &&
@@ -123,10 +187,51 @@ export class SlackChannel implements Channel {
         }
       }
 
+      const fileMarkers: string[] = [];
+      if (files.length > 0 && !isBotMessage) {
+        const filesDir = resolveGroupFolderPath(group.folder);
+        const inboxDir = path.join(filesDir, 'inbox');
+        fs.mkdirSync(inboxDir, { recursive: true });
+
+        for (const file of files) {
+          const downloadUrl = file.url_private_download || file.url_private;
+          if (!downloadUrl) {
+            logger.warn(
+              { jid, fileId: file.id },
+              'Slack file is missing private download URL',
+            );
+            continue;
+          }
+
+          const fileName = toSafeFileName(file);
+          const destPath = path.join(inboxDir, fileName);
+          const agentPath = `/workspace/group/inbox/${fileName}`;
+
+          try {
+            await downloadSlackFile(downloadUrl, destPath, this.botToken);
+            fileMarkers.push(`[File received: ${agentPath}]`);
+            logger.info({ jid, destPath, agentPath }, 'Slack file saved to inbox');
+          } catch (err) {
+            logger.error(
+              { jid, fileName, downloadUrl, err },
+              'Failed to download Slack file',
+            );
+          }
+        }
+      }
+
+      if (fileMarkers.length > 0) {
+        content = content
+          ? `${content}\n${fileMarkers.join('\n')}`
+          : fileMarkers.join('\n');
+      }
+
+      if (!content) return;
+
       this.opts.onMessage(jid, {
         id: msg.ts,
         chat_jid: jid,
-        sender: msg.user || msg.bot_id || '',
+        sender: userId || botId || '',
         sender_name: senderName,
         content,
         timestamp,
