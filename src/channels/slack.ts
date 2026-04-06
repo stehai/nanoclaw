@@ -81,7 +81,10 @@ async function downloadSlackFile(
               return;
             }
 
-            const nextUrl = new URL(res.headers.location, currentUrl).toString();
+            const nextUrl = new URL(
+              res.headers.location,
+              currentUrl,
+            ).toString();
             const nextHost = new URL(nextUrl).hostname.toLowerCase();
             const keepAuth =
               nextHost === 'slack.com' || nextHost.endsWith('.slack.com');
