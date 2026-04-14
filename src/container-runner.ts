@@ -30,6 +30,14 @@ import {
 import { detectAuthMode } from './credential-proxy.js';
 import { readEnvFile } from './env.js';
 import {
+  issueMcpControlGrant,
+  issueMcpProxyGrant,
+} from './mcp-proxy-grants.js';
+import {
+  buildProxyPathForMcpServer,
+  resolveExternalMcpServersForGroup,
+} from './mcp-registry.js';
+import {
   loadMountAllowlist,
   validateAdditionalMounts,
 } from './mount-security.js';
@@ -60,6 +68,17 @@ interface VolumeMount {
   hostPath: string;
   containerPath: string;
   readonly: boolean;
+}
+
+interface ExternalMcpServerDescriptor {
+  name: string;
+  transport: 'http' | 'sse' | 'stdio';
+  url?: string;
+  command?: string;
+  args?: string[];
+  env?: Record<string, string>;
+  allowedTools?: string[];
+  deniedTools?: string[];
 }
 
 function pushMount(mounts: VolumeMount[], mount: VolumeMount): void {
@@ -303,6 +322,8 @@ function buildVolumeMounts(
 function buildContainerArgs(
   mounts: VolumeMount[],
   containerName: string,
+  externalMcpServers: ExternalMcpServerDescriptor[],
+  mcpControlGrant: string,
 ): string[] {
   const args: string[] = ['run', '-i', '--rm', '--name', containerName];
 
@@ -324,6 +345,14 @@ function buildContainerArgs(
   if (openBrainKey) {
     args.push('-e', `OPEN_BRAIN_MCP_KEY=${openBrainKey}`);
   }
+
+  if (externalMcpServers.length > 0) {
+    args.push(
+      '-e',
+      `NANOCLAW_EXTERNAL_MCP_SERVERS_JSON=${JSON.stringify({ servers: externalMcpServers })}`,
+    );
+  }
+  args.push('-e', `NANOCLAW_MCP_CONTROL_GRANT=${mcpControlGrant}`);
 
   // Route API traffic through the credential proxy (containers never see real secrets)
   args.push(
@@ -368,6 +397,24 @@ function buildContainerArgs(
   return args;
 }
 
+function redactContainerArgs(args: string[]): string[] {
+  const redacted = [...args];
+  const sensitivePattern =
+    /(KEY|TOKEN|SECRET|PASSWORD|CREDENTIAL|GRANT|NANOCLAW_EXTERNAL_MCP_SERVERS_JSON)/i;
+
+  for (let i = 0; i < redacted.length - 1; i++) {
+    if (redacted[i] !== '-e') continue;
+    const pair = redacted[i + 1];
+    const eq = pair.indexOf('=');
+    if (eq === -1) continue;
+    const key = pair.slice(0, eq);
+    if (!sensitivePattern.test(key)) continue;
+    redacted[i + 1] = `${key}=[REDACTED]`;
+  }
+
+  return redacted;
+}
+
 export async function runContainerAgent(
   group: RegisteredGroup,
   input: ContainerInput,
@@ -393,10 +440,46 @@ export async function runContainerAgent(
   }
 
   const mounts = buildVolumeMounts(group, input.isMain);
+  const externalServers = resolveExternalMcpServersForGroup(
+    group.folder,
+    input.isMain,
+  );
+  const mcpControlGrant = issueMcpControlGrant(group.folder, input.isMain);
+
+  const externalMcpServers: ExternalMcpServerDescriptor[] = externalServers.map(
+    (server) => {
+      if (server.transport === 'http' || server.transport === 'sse') {
+        const grant = issueMcpProxyGrant(server.name);
+        const proxyPath = buildProxyPathForMcpServer(server.name);
+        return {
+          name: server.name,
+          transport: server.transport,
+          url: `http://${CONTAINER_HOST_GATEWAY}:${CREDENTIAL_PROXY_PORT}${proxyPath}?grant=${encodeURIComponent(grant)}`,
+          allowedTools: server.allowedTools,
+          deniedTools: server.deniedTools,
+        };
+      }
+      return {
+        name: server.name,
+        transport: 'stdio',
+        command: server.command,
+        args: server.args,
+        env: server.env,
+        allowedTools: server.allowedTools,
+        deniedTools: server.deniedTools,
+      };
+    },
+  );
 
   const safeName = group.folder.replace(/[^a-zA-Z0-9-]/g, '-');
   const containerName = `nanoclaw-${safeName}-${Date.now()}`;
-  const containerArgs = buildContainerArgs(mounts, containerName);
+  const containerArgs = buildContainerArgs(
+    mounts,
+    containerName,
+    externalMcpServers,
+    mcpControlGrant,
+  );
+  const safeContainerArgs = redactContainerArgs(containerArgs);
 
   logger.debug(
     {
@@ -406,7 +489,8 @@ export async function runContainerAgent(
         (m) =>
           `${m.hostPath} -> ${m.containerPath}${m.readonly ? ' (ro)' : ''}`,
       ),
-      containerArgs: containerArgs.join(' '),
+      containerArgs: safeContainerArgs.join(' '),
+      externalMcpServerCount: externalMcpServers.length,
     },
     'Container mount configuration',
   );
@@ -626,7 +710,7 @@ export async function runContainerAgent(
           JSON.stringify(input, null, 2),
           ``,
           `=== Container Args ===`,
-          containerArgs.join(' '),
+          safeContainerArgs.join(' '),
           ``,
           `=== Mounts ===`,
           mounts

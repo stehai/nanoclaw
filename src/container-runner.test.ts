@@ -64,6 +64,18 @@ const mountSecurityMocks = vi.hoisted(() => ({
 }));
 vi.mock('./mount-security.js', () => mountSecurityMocks);
 
+const mcpRegistryMocks = vi.hoisted(() => ({
+  resolveExternalMcpServersForGroup: vi.fn(() => []),
+  buildProxyPathForMcpServer: vi.fn((name: string) => `/_nanoclaw/mcp/${name}`),
+}));
+vi.mock('./mcp-registry.js', () => mcpRegistryMocks);
+
+const mcpGrantMocks = vi.hoisted(() => ({
+  issueMcpProxyGrant: vi.fn(() => 'test-grant'),
+  issueMcpControlGrant: vi.fn(() => 'control-grant'),
+}));
+vi.mock('./mcp-proxy-grants.js', () => mcpGrantMocks);
+
 vi.mock('./container-runtime.js', () => ({
   CONTAINER_HOST_GATEWAY: 'host-gateway',
   CONTAINER_RUNTIME_BIN: 'docker',
@@ -160,6 +172,20 @@ describe('container-runner timeout behavior', () => {
     mountSecurityMocks.loadMountAllowlist.mockImplementation(() => null);
     mountSecurityMocks.validateAdditionalMounts.mockReset();
     mountSecurityMocks.validateAdditionalMounts.mockImplementation(() => []);
+    mcpRegistryMocks.resolveExternalMcpServersForGroup.mockReset();
+    mcpRegistryMocks.resolveExternalMcpServersForGroup.mockImplementation(
+      () => [],
+    );
+    mcpRegistryMocks.buildProxyPathForMcpServer.mockReset();
+    mcpRegistryMocks.buildProxyPathForMcpServer.mockImplementation(
+      (name: string) => `/_nanoclaw/mcp/${name}`,
+    );
+    mcpGrantMocks.issueMcpProxyGrant.mockReset();
+    mcpGrantMocks.issueMcpProxyGrant.mockImplementation(() => 'test-grant');
+    mcpGrantMocks.issueMcpControlGrant.mockReset();
+    mcpGrantMocks.issueMcpControlGrant.mockImplementation(
+      () => 'control-grant',
+    );
   });
 
   afterEach(() => {
@@ -383,5 +409,39 @@ describe('container-runner timeout behavior', () => {
     ).rejects.toThrow(
       'Container mount collision at /workspace/extra/hidrive-keys',
     );
+  });
+
+  it('passes external MCP descriptors to the container env', async () => {
+    mcpRegistryMocks.resolveExternalMcpServersForGroup.mockReturnValue([
+      {
+        name: 'parqet',
+        transport: 'http',
+        allowedTools: ['portfolio_list'],
+        deniedTools: [],
+      },
+      {
+        name: 'local-tool',
+        transport: 'stdio',
+        command: 'npx',
+        args: ['-y', 'my-mcp'],
+        env: { MCP_ACCESS_TOKEN: 'short-lived-token' },
+        allowedTools: [],
+        deniedTools: [],
+      },
+    ] as any);
+
+    const resultPromise = runContainerAgent(testGroup, testInput, () => {});
+    fakeProc.emit('close', 0);
+    await vi.advanceTimersByTimeAsync(10);
+    await resultPromise;
+
+    const [, args] = childProcessMocks.spawn.mock.calls[0];
+    const envEntry = args.find((arg: string) =>
+      arg.startsWith('NANOCLAW_EXTERNAL_MCP_SERVERS_JSON='),
+    );
+    expect(envEntry).toBeTruthy();
+    expect(envEntry).toContain('/_nanoclaw/mcp/parqet?grant=test-grant');
+    expect(envEntry).toContain('"transport":"stdio"');
+    expect(args).toContain('NANOCLAW_MCP_CONTROL_GRANT=control-grant');
   });
 });

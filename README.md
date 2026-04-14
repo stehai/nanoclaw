@@ -168,6 +168,25 @@ Key files:
 - `src/db.ts` - SQLite operations (messages, groups, sessions, state)
 - `groups/*/CLAUDE.md` - Per-group memory
 
+## External MCP Servers
+
+NanoClaw can load additional MCP servers from a host-side registry file:
+
+- Config path: `~/.config/nanoclaw/mcp-servers.json`
+- Example file: `config-examples/mcp-servers.json`
+- Optional OAuth token store: `~/.config/nanoclaw/mcp-credentials.json`
+- OAuth callback base URL (for hosted PKCE): `MCP_OAUTH_CALLBACK_BASE_URL=https://your-host`
+
+Remote MCP servers (`http` / `sse`) are proxied through the host credential proxy, so authentication headers stay on the host. Stdio MCP servers are also supported for local tools.
+
+OAuth troubleshooting (hosted PKCE):
+- OAuth links expire quickly (state TTL is 10 minutes); always use a fresh link.
+- If provider authorization fails before redirect, NanoClaw receives no callback.
+- Callback path must be publicly reachable and reverse-proxied: `/_nanoclaw/oauth/callback`.
+- Check logs:
+  - Reverse proxy access log (example Caddy): `/var/log/caddy/krabbe.access.log`
+  - NanoClaw log entries: `Received MCP OAuth callback`, `MCP OAuth callback failed`, `MCP OAuth callback completed`
+
 ## FAQ
 
 **Why Docker?**

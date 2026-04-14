@@ -36,6 +36,17 @@ interface ContainerOutput {
   error?: string;
 }
 
+interface ExternalMcpServerDescriptor {
+  name: string;
+  transport: 'http' | 'sse' | 'stdio';
+  url?: string;
+  command?: string;
+  args?: string[];
+  env?: Record<string, string>;
+  allowedTools?: string[];
+  deniedTools?: string[];
+}
+
 interface SessionEntry {
   sessionId: string;
   fullPath: string;
@@ -258,6 +269,123 @@ function formatTranscriptMarkdown(messages: ParsedMessage[], title?: string | nu
   return lines.join('\n');
 }
 
+function parseExternalMcpServersFromEnv(): ExternalMcpServerDescriptor[] {
+  const raw = process.env.NANOCLAW_EXTERNAL_MCP_SERVERS_JSON;
+  if (!raw) return [];
+
+  try {
+    const parsed = JSON.parse(raw) as unknown;
+    const rawServers = Array.isArray(parsed)
+      ? parsed
+      : (typeof parsed === 'object' && parsed && Array.isArray((parsed as { servers?: unknown }).servers))
+        ? (parsed as { servers: unknown[] }).servers
+        : [];
+
+    const servers: ExternalMcpServerDescriptor[] = [];
+    for (const entry of rawServers) {
+      if (!entry || typeof entry !== 'object') continue;
+      const server = entry as Record<string, unknown>;
+      const name = typeof server.name === 'string' ? server.name : '';
+      const transport = server.transport;
+      if (!name || (transport !== 'http' && transport !== 'sse' && transport !== 'stdio')) {
+        continue;
+      }
+
+      if ((transport === 'http' || transport === 'sse') && typeof server.url !== 'string') {
+        continue;
+      }
+      if (transport === 'stdio' && typeof server.command !== 'string') {
+        continue;
+      }
+
+      const allowedTools = Array.isArray(server.allowedTools)
+        ? server.allowedTools.filter((v): v is string => typeof v === 'string')
+        : [];
+      const deniedTools = Array.isArray(server.deniedTools)
+        ? server.deniedTools.filter((v): v is string => typeof v === 'string')
+        : [];
+
+      servers.push({
+        name,
+        transport,
+        url: typeof server.url === 'string' ? server.url : undefined,
+        command: typeof server.command === 'string' ? server.command : undefined,
+        args: Array.isArray(server.args)
+          ? server.args.filter((v): v is string => typeof v === 'string')
+          : [],
+        env:
+          typeof server.env === 'object' &&
+          server.env !== null &&
+          !Array.isArray(server.env)
+            ? Object.fromEntries(
+              Object.entries(server.env).filter(
+                (kv): kv is [string, string] => typeof kv[1] === 'string',
+              ),
+            )
+            : undefined,
+        allowedTools,
+        deniedTools,
+      });
+    }
+    return servers;
+  } catch (err) {
+    log(
+      `Invalid NANOCLAW_EXTERNAL_MCP_SERVERS_JSON: ${err instanceof Error ? err.message : String(err)}`,
+    );
+    return [];
+  }
+}
+
+function buildAllowedToolPatternsForExternalServer(
+  server: ExternalMcpServerDescriptor,
+): string[] {
+  const denied = new Set(server.deniedTools || []);
+  const allowed = server.allowedTools || [];
+
+  if (allowed.length === 0 && denied.size > 0) {
+    log(`External MCP server "${server.name}" has deniedTools but no allowedTools; skipping tool namespace exposure`);
+    return [];
+  }
+
+  if (allowed.length === 0) {
+    return [`mcp__${server.name}__*`];
+  }
+
+  const patterns: string[] = [];
+  for (const tool of allowed) {
+    if (denied.has(tool)) continue;
+    patterns.push(`mcp__${server.name}__${tool}`);
+  }
+  return patterns;
+}
+
+function buildAllowedTools(
+  externalServers: ExternalMcpServerDescriptor[],
+): string[] {
+  const allowedTools = [
+    'Bash',
+    'Read', 'Write', 'Edit', 'Glob', 'Grep',
+    'WebSearch', 'WebFetch',
+    'Task', 'TaskOutput', 'TaskStop',
+    'TeamCreate', 'TeamDelete', 'SendMessage',
+    'TodoWrite', 'ToolSearch', 'Skill',
+    'NotebookEdit',
+    'mcp__nanoclaw__*',
+  ];
+
+  if (process.env.OPEN_BRAIN_MCP_KEY) {
+    allowedTools.push('mcp__open_brain__*');
+  }
+
+  for (const server of externalServers) {
+    for (const pattern of buildAllowedToolPatternsForExternalServer(server)) {
+      allowedTools.push(pattern);
+    }
+  }
+
+  return allowedTools;
+}
+
 /**
  * Build MCP server config map.
  * Extracted to avoid TS inference issues with conditional spreads.
@@ -265,6 +393,7 @@ function formatTranscriptMarkdown(messages: ParsedMessage[], title?: string | nu
 function buildMcpServers(
   mcpServerPath: string,
   containerInput: ContainerInput,
+  externalServers: ExternalMcpServerDescriptor[],
 ): Record<string, McpServerConfig> {
   const servers: Record<string, McpServerConfig> = {
     nanoclaw: {
@@ -282,6 +411,21 @@ function buildMcpServers(
       type: 'http',
       url: `https://tdcoopppxwryxsnikcye.supabase.co/functions/v1/open-brain-mcp?key=${process.env.OPEN_BRAIN_MCP_KEY}`,
     };
+  }
+  for (const server of externalServers) {
+    if (server.transport === 'stdio') {
+      if (!server.command) continue;
+      servers[server.name] = {
+        command: server.command,
+        args: server.args || [],
+        env: server.env,
+      };
+    } else if (server.url) {
+      servers[server.name] = {
+        type: server.transport,
+        url: server.url,
+      };
+    }
   }
   return servers;
 }
@@ -417,6 +561,12 @@ async function runQuery(
     log(`Additional directories: ${extraDirs.join(', ')}`);
   }
 
+  const externalMcpServers = parseExternalMcpServersFromEnv();
+  const allowedTools = buildAllowedTools(externalMcpServers);
+  if (externalMcpServers.length > 0) {
+    log(`External MCP servers enabled: ${externalMcpServers.map((s) => s.name).join(', ')}`);
+  }
+
   for await (const message of query({
     prompt: stream,
     options: {
@@ -427,22 +577,12 @@ async function runQuery(
       systemPrompt: globalClaudeMd
         ? { type: 'preset' as const, preset: 'claude_code' as const, append: globalClaudeMd }
         : undefined,
-      allowedTools: [
-        'Bash',
-        'Read', 'Write', 'Edit', 'Glob', 'Grep',
-        'WebSearch', 'WebFetch',
-        'Task', 'TaskOutput', 'TaskStop',
-        'TeamCreate', 'TeamDelete', 'SendMessage',
-        'TodoWrite', 'ToolSearch', 'Skill',
-        'NotebookEdit',
-        'mcp__nanoclaw__*',
-        'mcp__open_brain__*'
-      ],
+      allowedTools,
       env: sdkEnv,
       permissionMode: 'bypassPermissions',
       allowDangerouslySkipPermissions: true,
       settingSources: ['project', 'user'],
-      mcpServers: buildMcpServers(mcpServerPath, containerInput),
+      mcpServers: buildMcpServers(mcpServerPath, containerInput, externalMcpServers),
       hooks: {
         PreCompact: [{ hooks: [createPreCompactHook(containerInput.assistantName)] }],
       },
