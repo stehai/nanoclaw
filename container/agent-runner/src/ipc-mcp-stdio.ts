@@ -19,6 +19,8 @@ const TASKS_DIR = path.join(IPC_DIR, 'tasks');
 const chatJid = process.env.NANOCLAW_CHAT_JID!;
 const groupFolder = process.env.NANOCLAW_GROUP_FOLDER!;
 const isMain = process.env.NANOCLAW_IS_MAIN === '1';
+const controlGrant = process.env.NANOCLAW_MCP_CONTROL_GRANT || '';
+const hostApiBase = process.env.ANTHROPIC_BASE_URL || 'http://host.docker.internal:3001';
 
 function writeIpcFile(dir: string, data: object): string {
   fs.mkdirSync(dir, { recursive: true });
@@ -32,6 +34,39 @@ function writeIpcFile(dir: string, data: object): string {
   fs.renameSync(tempPath, filepath);
 
   return filename;
+}
+
+async function callHostOauthApi<T>(
+  method: 'GET' | 'POST',
+  endpoint: string,
+  payload?: Record<string, unknown>,
+): Promise<T> {
+  const url = new URL(endpoint, hostApiBase);
+  const response = await fetch(url, {
+    method,
+    headers: {
+      'content-type': 'application/json',
+      'x-nanoclaw-control-grant': controlGrant,
+    },
+    body: method === 'POST' ? JSON.stringify(payload || {}) : undefined,
+  });
+
+  let data: unknown = null;
+  try {
+    data = await response.json();
+  } catch {
+    data = null;
+  }
+
+  if (!response.ok) {
+    const message =
+      typeof (data as { error?: unknown })?.error === 'string'
+        ? (data as { error: string }).error
+        : `HTTP ${response.status}`;
+    throw new Error(message);
+  }
+
+  return data as T;
 }
 
 const server = new McpServer({
@@ -93,6 +128,151 @@ server.tool(
     writeIpcFile(MESSAGES_DIR, data);
 
     return { content: [{ type: 'text' as const, text: 'Image queued for sending.' }] };
+  },
+);
+
+server.tool(
+  'mcp_connect_server',
+  'Start OAuth authentication for an MCP server that uses oauth2_pkce.',
+  {
+    server_name: z.string().describe('Configured MCP server name (e.g. "parqet")'),
+  },
+  async (args) => {
+    try {
+      const result = await callHostOauthApi<{
+        ok: boolean;
+        authorizationUrl: string;
+        state: string;
+        expiresAt: string;
+      }>('POST', '/_nanoclaw/oauth/start', {
+        serverName: args.server_name,
+      });
+
+      return {
+        content: [
+          {
+            type: 'text' as const,
+            text:
+              `Open this URL in your browser to connect ${args.server_name}:\n` +
+              `${result.authorizationUrl}\n\n` +
+              `State: ${result.state}\nExpires: ${result.expiresAt}`,
+          },
+        ],
+      };
+    } catch (err) {
+      return {
+        content: [
+          {
+            type: 'text' as const,
+            text: `Failed to start OAuth flow: ${err instanceof Error ? err.message : String(err)}`,
+          },
+        ],
+        isError: true,
+      };
+    }
+  },
+);
+
+server.tool(
+  'mcp_auth_status',
+  'Check OAuth connection status for an MCP server.',
+  {
+    server_name: z.string().describe('Configured MCP server name'),
+  },
+  async (args) => {
+    try {
+      const endpoint = `/_nanoclaw/oauth/status?server=${encodeURIComponent(args.server_name)}`;
+      const result = await callHostOauthApi<{
+        ok: boolean;
+        status: string;
+        message: string;
+      }>('GET', endpoint);
+
+      return {
+        content: [
+          {
+            type: 'text' as const,
+            text: `Status for ${args.server_name}: ${result.status}\n${result.message}`,
+          },
+        ],
+      };
+    } catch (err) {
+      return {
+        content: [
+          {
+            type: 'text' as const,
+            text: `Failed to read auth status: ${err instanceof Error ? err.message : String(err)}`,
+          },
+        ],
+        isError: true,
+      };
+    }
+  },
+);
+
+server.tool(
+  'mcp_disconnect_server',
+  'Disconnect OAuth credentials for an MCP server.',
+  {
+    server_name: z.string().describe('Configured MCP server name'),
+  },
+  async (args) => {
+    try {
+      const result = await callHostOauthApi<{ ok: boolean; message: string }>(
+        'POST',
+        '/_nanoclaw/oauth/disconnect',
+        { serverName: args.server_name },
+      );
+      return {
+        content: [{ type: 'text' as const, text: result.message }],
+      };
+    } catch (err) {
+      return {
+        content: [
+          {
+            type: 'text' as const,
+            text: `Failed to disconnect server: ${err instanceof Error ? err.message : String(err)}`,
+          },
+        ],
+        isError: true,
+      };
+    }
+  },
+);
+
+server.tool(
+  'mcp_complete_server_auth',
+  'Manually complete OAuth by providing an authorization code (fallback when callback URL is unreachable).',
+  {
+    server_name: z.string().describe('Configured MCP server name'),
+    code: z.string().describe('Authorization code from OAuth redirect URL'),
+    state: z.string().optional().describe('Optional OAuth state value'),
+  },
+  async (args) => {
+    try {
+      const result = await callHostOauthApi<{ ok: boolean; message: string }>(
+        'POST',
+        '/_nanoclaw/oauth/complete',
+        {
+          serverName: args.server_name,
+          code: args.code,
+          state: args.state,
+        },
+      );
+      return {
+        content: [{ type: 'text' as const, text: result.message }],
+      };
+    } catch (err) {
+      return {
+        content: [
+          {
+            type: 'text' as const,
+            text: `Failed to complete OAuth: ${err instanceof Error ? err.message : String(err)}`,
+          },
+        ],
+        isError: true,
+      };
+    }
   },
 );
 

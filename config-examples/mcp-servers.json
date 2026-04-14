@@ -1,0 +1,37 @@
+{
+  "servers": [
+    {
+      "name": "parqet",
+      "enabled": true,
+      "transport": "http",
+      "url": "https://mcp.parqet.com",
+      "auth": {
+        "type": "oauth2_pkce",
+        "credentialKey": "parqet",
+        "clientId": "019c28d5-e0a0-703f-a790-10c15c2310ee",
+        "scopes": ["portfolio:read"],
+        "issuer": "https://connect.parqet.com",
+        "callbackMode": "hosted"
+      },
+      "policy": {
+        "mainOnly": true
+      }
+    },
+    {
+      "name": "local-example",
+      "enabled": false,
+      "transport": "stdio",
+      "command": "npx",
+      "args": ["-y", "@example/mcp-server"],
+      "envFrom": ["EXAMPLE_API_KEY"],
+      "auth": {
+        "type": "api_key",
+        "envKey": "EXAMPLE_API_KEY",
+        "targetEnvVar": "EXAMPLE_API_KEY"
+      },
+      "policy": {
+        "allowGroups": ["main"]
+      }
+    }
+  ]
+}

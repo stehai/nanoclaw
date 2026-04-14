@@ -3,9 +3,35 @@ import http from 'http';
 import type { AddressInfo } from 'net';
 
 const mockEnv: Record<string, string> = {};
+const mockMcpTargets = vi.hoisted(() => new Map());
+const oauthMocks = vi.hoisted(() => ({
+  startMcpOAuthFlow: vi.fn(),
+  getMcpOAuthStatus: vi.fn(),
+  disconnectMcpOAuth: vi.fn(),
+  completeMcpOAuthCallback: vi.fn(),
+  completeMcpOAuthManual: vi.fn(),
+  getValidOAuthAccessToken: vi.fn(),
+}));
 vi.mock('./env.js', () => ({
   readEnvFile: vi.fn(() => ({ ...mockEnv })),
 }));
+vi.mock('./mcp-registry.js', () => ({
+  resolveExternalMcpProxyTargets: vi.fn(() => mockMcpTargets),
+  applyAuthTokenToHeaders: vi.fn(
+    (headers: Record<string, string>, _auth: unknown, token: string) => ({
+      ...headers,
+      authorization: `Bearer ${token}`,
+    }),
+  ),
+}));
+vi.mock('./mcp-proxy-grants.js', () => ({
+  validateMcpProxyGrant: vi.fn(() => true),
+  validateMcpControlGrant: vi.fn(() => ({
+    groupFolder: 'whatsapp_main',
+    isMain: true,
+  })),
+}));
+vi.mock('./mcp-oauth.js', () => oauthMocks);
 
 vi.mock('./logger.js', () => ({
   logger: { info: vi.fn(), error: vi.fn(), debug: vi.fn(), warn: vi.fn() },
@@ -52,6 +78,30 @@ describe('credential-proxy', () => {
 
   beforeEach(async () => {
     lastUpstreamHeaders = {};
+    oauthMocks.getValidOAuthAccessToken.mockResolvedValue('oauth-access-token');
+    oauthMocks.completeMcpOAuthCallback.mockResolvedValue({
+      ok: true,
+      message: 'connected',
+      html: '<html>ok</html>',
+    });
+    oauthMocks.startMcpOAuthFlow.mockResolvedValue({
+      authorizationUrl: 'https://auth.example.com',
+      state: 'state-1',
+      expiresAt: new Date().toISOString(),
+    });
+    oauthMocks.getMcpOAuthStatus.mockResolvedValue({
+      ok: true,
+      status: 'connected',
+      message: 'ok',
+    });
+    oauthMocks.disconnectMcpOAuth.mockReturnValue({
+      ok: true,
+      message: 'disconnected',
+    });
+    oauthMocks.completeMcpOAuthManual.mockResolvedValue({
+      ok: true,
+      message: 'done',
+    });
 
     upstreamServer = http.createServer((req, res) => {
       lastUpstreamHeaders = { ...req.headers };
@@ -68,6 +118,32 @@ describe('credential-proxy', () => {
     await new Promise<void>((r) => proxyServer?.close(() => r()));
     await new Promise<void>((r) => upstreamServer?.close(() => r()));
     for (const key of Object.keys(mockEnv)) delete mockEnv[key];
+    mockMcpTargets.clear();
+    Object.values(oauthMocks).forEach((mockFn) => mockFn.mockReset());
+    oauthMocks.getValidOAuthAccessToken.mockResolvedValue('oauth-access-token');
+    oauthMocks.completeMcpOAuthCallback.mockResolvedValue({
+      ok: true,
+      message: 'connected',
+      html: '<html>ok</html>',
+    });
+    oauthMocks.startMcpOAuthFlow.mockResolvedValue({
+      authorizationUrl: 'https://auth.example.com',
+      state: 'state-1',
+      expiresAt: new Date().toISOString(),
+    });
+    oauthMocks.getMcpOAuthStatus.mockResolvedValue({
+      ok: true,
+      status: 'connected',
+      message: 'ok',
+    });
+    oauthMocks.disconnectMcpOAuth.mockReturnValue({
+      ok: true,
+      message: 'disconnected',
+    });
+    oauthMocks.completeMcpOAuthManual.mockResolvedValue({
+      ok: true,
+      message: 'done',
+    });
   });
 
   async function startProxy(env: Record<string, string>): Promise<number> {
@@ -188,5 +264,73 @@ describe('credential-proxy', () => {
 
     expect(res.statusCode).toBe(502);
     expect(res.body).toBe('Bad Gateway');
+  });
+
+  it('proxies MCP requests with grant and injected auth headers', async () => {
+    proxyPort = await startProxy({ ANTHROPIC_API_KEY: 'sk-ant-real-key' });
+    mockMcpTargets.set('parqet', {
+      name: 'parqet',
+      url: `http://127.0.0.1:${upstreamPort}/mcp`,
+      headers: {},
+      auth: { type: 'oauth2_pkce' },
+    });
+
+    const res = await makeRequest(proxyPort, {
+      method: 'POST',
+      path: '/_nanoclaw/mcp/parqet?grant=test-grant',
+      headers: { 'content-type': 'application/json' },
+    });
+
+    expect(res.statusCode).toBe(200);
+    expect(lastUpstreamHeaders['authorization']).toBe('Bearer oauth-access-token');
+  });
+
+  it('rejects MCP requests with unknown server', async () => {
+    proxyPort = await startProxy({ ANTHROPIC_API_KEY: 'sk-ant-real-key' });
+
+    const res = await makeRequest(proxyPort, {
+      method: 'POST',
+      path: '/_nanoclaw/mcp/unknown?grant=test-grant',
+      headers: { 'content-type': 'application/json' },
+    });
+
+    expect(res.statusCode).toBe(404);
+  });
+
+  it('serves OAuth callback endpoint', async () => {
+    proxyPort = await startProxy({ ANTHROPIC_API_KEY: 'sk-ant-real-key' });
+
+    const res = await makeRequest(proxyPort, {
+      method: 'GET',
+      path: '/_nanoclaw/oauth/callback?code=abc&state=xyz',
+    });
+
+    expect(res.statusCode).toBe(200);
+    expect(res.body).toContain('<html>');
+    expect(oauthMocks.completeMcpOAuthCallback).toHaveBeenCalled();
+  });
+
+  it('starts OAuth via control endpoint', async () => {
+    proxyPort = await startProxy({ ANTHROPIC_API_KEY: 'sk-ant-real-key' });
+
+    const res = await makeRequest(
+      proxyPort,
+      {
+        method: 'POST',
+        path: '/_nanoclaw/oauth/start',
+        headers: {
+          'content-type': 'application/json',
+          'x-nanoclaw-control-grant': 'control',
+        },
+      },
+      JSON.stringify({ serverName: 'parqet' }),
+    );
+
+    expect(res.statusCode).toBe(200);
+    expect(oauthMocks.startMcpOAuthFlow).toHaveBeenCalledWith(
+      'parqet',
+      'whatsapp_main',
+      true,
+    );
   });
 });

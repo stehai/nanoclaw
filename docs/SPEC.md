@@ -636,6 +636,34 @@ The `nanoclaw` MCP server is created dynamically per agent call with the current
 | `cancel_task` | Delete a task |
 | `send_message` | Send a message to the group via its channel |
 
+### External MCP (registry-driven)
+
+NanoClaw can load additional MCP servers from host config:
+
+- `~/.config/nanoclaw/mcp-servers.json`
+- Example: `config-examples/mcp-servers.json`
+
+Supported transports:
+- `http` / `sse` (remote MCP, proxied through host credential proxy)
+- `stdio` (local MCP command in the container)
+
+For remote OAuth2 MCP providers (for example Parqet), NanoClaw supports PKCE flow with host-managed token storage:
+
+- Callback base URL via `MCP_OAUTH_CALLBACK_BASE_URL`
+- OAuth callback endpoint: `/_nanoclaw/oauth/callback`
+- Tokens stored on host in `~/.config/nanoclaw/mcp-credentials.json`
+- Access-token refresh is handled on demand by the host proxy
+- Containers only receive scoped grant tokens for proxy access; long-lived credentials remain on host
+
+#### OAuth Troubleshooting Notes
+
+- OAuth `state` is stored in-memory and expires after 10 minutes; using an older link will fail.
+- If the provider rejects authorization before redirect, NanoClaw callback logs remain empty because no callback is received.
+- Hosted callback path is `/_nanoclaw/oauth/callback`; ensure reverse proxy forwards this path to the credential proxy.
+- Useful logs:
+  - Reverse proxy access log (example Caddy): `/var/log/caddy/krabbe.access.log`
+  - NanoClaw runtime log: look for `Received MCP OAuth callback`, `MCP OAuth callback failed`, `MCP OAuth callback completed`
+
 ---
 
 ## Deployment
