@@ -161,9 +161,14 @@ export function startCredentialProxy(
               },
               'Received MCP OAuth callback',
             );
-            const result = await completeMcpOAuthCallback(parsedUrl.searchParams);
+            const result = await completeMcpOAuthCallback(
+              parsedUrl.searchParams,
+            );
             if (result.ok) {
-              logger.info({ message: result.message }, 'MCP OAuth callback completed');
+              logger.info(
+                { message: result.message },
+                'MCP OAuth callback completed',
+              );
             } else {
               logger.warn(
                 {
@@ -228,7 +233,9 @@ export function startCredentialProxy(
                 sendJson(res, 400, {
                   ok: false,
                   error:
-                    err instanceof Error ? err.message : 'Failed to start OAuth',
+                    err instanceof Error
+                      ? err.message
+                      : 'Failed to start OAuth',
                 });
               }
               return;
@@ -373,7 +380,9 @@ export function startCredentialProxy(
                 return;
               }
               const keySource = readEnvFile([target.auth.envKey]);
-              const apiKey = process.env[target.auth.envKey] || keySource[target.auth.envKey];
+              const apiKey =
+                process.env[target.auth.envKey] ||
+                keySource[target.auth.envKey];
               if (!apiKey) {
                 res.writeHead(401);
                 res.end('MCP server credential is not configured');

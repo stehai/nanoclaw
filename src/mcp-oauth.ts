@@ -47,7 +47,11 @@ function prunePendingFlows(now = Date.now()): void {
 }
 
 function base64Url(input: Buffer): string {
-  return input.toString('base64').replace(/\+/g, '-').replace(/\//g, '_').replace(/=+$/g, '');
+  return input
+    .toString('base64')
+    .replace(/\+/g, '-')
+    .replace(/\//g, '_')
+    .replace(/=+$/g, '');
 }
 
 function resolveCallbackBaseUrl(): string {
@@ -71,11 +75,14 @@ function isLikelyExpired(credential: OAuth2Credential): boolean {
   return expires - REFRESH_SKEW_MS <= Date.now();
 }
 
-async function fetchOAuthDiscovery(server: McpServerConfig): Promise<OAuthDiscovery> {
+async function fetchOAuthDiscovery(
+  server: McpServerConfig,
+): Promise<OAuthDiscovery> {
   const cached = discoveryCache.get(server.name);
   if (cached) return cached;
 
-  const issuer = server.auth.issuer || (server.url ? new URL(server.url).origin : '');
+  const issuer =
+    server.auth.issuer || (server.url ? new URL(server.url).origin : '');
   if (!issuer) return {};
 
   const url = `${issuer.replace(/\/+$/, '')}/.well-known/oauth-authorization-server`;
@@ -94,10 +101,7 @@ async function fetchOAuthDiscovery(server: McpServerConfig): Promise<OAuthDiscov
     discoveryCache.set(server.name, payload);
     return payload;
   } catch (err) {
-    logger.warn(
-      { server: server.name, err },
-      'OAuth discovery request failed',
-    );
+    logger.warn({ server: server.name, err }, 'OAuth discovery request failed');
     return {};
   }
 }
@@ -126,10 +130,14 @@ function requireOauthServer(
 ): McpServerConfig {
   const server = getMcpServerConfigByName(serverName);
   if (!server || !server.enabled) {
-    throw new Error(`MCP server "${serverName}" is not configured or disabled.`);
+    throw new Error(
+      `MCP server "${serverName}" is not configured or disabled.`,
+    );
   }
   if (!isMcpServerAllowedForGroup(server, groupFolder, isMain)) {
-    throw new Error(`MCP server "${serverName}" is not allowed for this group.`);
+    throw new Error(
+      `MCP server "${serverName}" is not allowed for this group.`,
+    );
   }
   if (server.auth.type !== 'oauth2_pkce') {
     throw new Error(`MCP server "${serverName}" is not configured for OAuth2.`);
@@ -154,7 +162,11 @@ function buildAuthUrl(
 }
 
 function tokenExpiryIso(expiresIn: unknown): string | undefined {
-  if (typeof expiresIn !== 'number' || !Number.isFinite(expiresIn) || expiresIn <= 0) {
+  if (
+    typeof expiresIn !== 'number' ||
+    !Number.isFinite(expiresIn) ||
+    expiresIn <= 0
+  ) {
     return undefined;
   }
   return new Date(Date.now() + expiresIn * 1000).toISOString();
@@ -533,10 +545,7 @@ export async function getValidOAuthAccessToken(
     const refreshed = await refreshOAuthToken(server, credential);
     return refreshed?.accessToken || null;
   } catch (err) {
-    logger.warn(
-      { server: serverName, err },
-      'Failed to refresh OAuth token',
-    );
+    logger.warn({ server: serverName, err }, 'Failed to refresh OAuth token');
     return null;
   }
 }

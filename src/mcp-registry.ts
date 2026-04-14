@@ -106,7 +106,8 @@ function parseAuthConfig(value: Record<string, unknown>): McpAuthConfig {
       clientId: asString(authObj.clientId) || undefined,
       scopes: parseStringArray(authObj.scopes),
       issuer: asString(authObj.issuer) || undefined,
-      authorizationEndpoint: asString(authObj.authorizationEndpoint) || undefined,
+      authorizationEndpoint:
+        asString(authObj.authorizationEndpoint) || undefined,
       tokenEndpoint: asString(authObj.tokenEndpoint) || undefined,
       callbackMode:
         callbackMode === 'manual' || callbackMode === 'hosted'
@@ -168,7 +169,10 @@ export function loadMcpServerConfigs(): McpServerConfig[] {
     const name = asString(value.name);
     const transport = asString(value.transport);
     if (!name || !validServerName(name) || RESERVED_NAMES.has(name)) {
-      logger.warn({ name }, 'Skipping MCP server with invalid or reserved name');
+      logger.warn(
+        { name },
+        'Skipping MCP server with invalid or reserved name',
+      );
       continue;
     }
     if (transport !== 'http' && transport !== 'sse' && transport !== 'stdio') {

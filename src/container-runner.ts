@@ -29,7 +29,10 @@ import {
 } from './container-runtime.js';
 import { detectAuthMode } from './credential-proxy.js';
 import { readEnvFile } from './env.js';
-import { issueMcpControlGrant, issueMcpProxyGrant } from './mcp-proxy-grants.js';
+import {
+  issueMcpControlGrant,
+  issueMcpProxyGrant,
+} from './mcp-proxy-grants.js';
 import {
   buildProxyPathForMcpServer,
   resolveExternalMcpServersForGroup,

@@ -282,7 +282,9 @@ describe('credential-proxy', () => {
     });
 
     expect(res.statusCode).toBe(200);
-    expect(lastUpstreamHeaders['authorization']).toBe('Bearer oauth-access-token');
+    expect(lastUpstreamHeaders['authorization']).toBe(
+      'Bearer oauth-access-token',
+    );
   });
 
   it('rejects MCP requests with unknown server', async () => {
